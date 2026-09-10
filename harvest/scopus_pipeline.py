@@ -222,6 +222,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 ENTRIES = [
     (5460, "Scopus(mlkd)"),
+    (5841, "Scopus(Kr1)"),
 ]
 
 
@@ -681,6 +682,32 @@ def wait_results(pg, box, n=36):
 
 
 def attach(pg, box):
+    def on_req(req):
+        try:
+            u = req.url or ""
+            if "/gateway/documents/search" not in u or "parsequery" in u:
+                return
+            if req.method == "POST":
+                pd = req.post_data or ""
+                if not pd:
+                    return
+                try:
+                    obj = json.loads(pd)
+                except Exception:
+                    obj = {}
+                if obj.get("documentClassification") == "preprint":
+                    return
+                if obj.get("documentClassification") == "primary" or (
+                    isinstance(obj.get("resultSet"), dict) and not box.get("search_post")
+                ):
+                    box["search_post"] = {"u": u, "post": pd}
+                    log("[search-post]", pd[:280])
+            else:
+                box.setdefault("search_gets", []).append(u[:240])
+                log("[search-get]", u[:180])
+        except Exception:
+            pass
+
     def on_resp(r):
         try:
             u = r.url or ""
@@ -711,6 +738,7 @@ def attach(pg, box):
                     log("[docs-hit]", u[:100], "len", len(body))
         except Exception:
             pass
+    pg.on("request", on_req)
     pg.on("response", on_resp)
 
 
@@ -987,56 +1015,156 @@ def export_csv(pg, box):
     return []
 
 
+def click_results_next(pg):
+    """Click the results-list Next control. Gateway JSON offset is dropped."""
+    try:
+        hit = pg.evaluate("""() => {
+            const vis = e => {
+                const r = e.getBoundingClientRect();
+                return r.width > 8 && r.height > 8 && r.bottom > 80 && r.top < window.innerHeight;
+            };
+            const lab = e => ((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')
+                +' '+(e.innerText||'')).replace(/\\s+/g,' ').trim();
+            const els = Array.from(document.querySelectorAll('button, a, [role=button]'));
+            const next = els.find(e => vis(e) && !e.disabled && e.getAttribute('aria-disabled') !== 'true'
+                && (/next page/i.test(lab(e)) || /^(next|下一页)$/i.test(lab(e))
+                    || lab(e) === '>' || lab(e) === '›'));
+            if (next) { next.click(); return {ok:true, t: lab(next).slice(0,40)}; }
+            const nums = els.filter(e => vis(e) && /^\\d+$/.test((e.innerText||'').trim())).map(e => {
+                const n = parseInt((e.innerText||'').trim(), 10);
+                const cur = e.getAttribute('aria-current') === 'page'
+                    || /current|selected|active|Mui-selected/i.test(e.className||'');
+                return {n, cur, el: e};
+            });
+            nums.sort((a,b) => a.n - b.n);
+            const cur = nums.find(x => x.cur);
+            const nxt = cur ? nums.find(x => x.n === cur.n + 1) : nums.find(x => x.n === 2);
+            if (nxt) { nxt.el.click(); return {ok:true, t: String(nxt.n)}; }
+            return {ok:false, nums: nums.map(x => x.n).slice(0, 12)};
+        }""")
+    except Exception as e:
+        log("[next-err]", str(e)[:80])
+        return False
+    log("[next]", hit)
+    return bool(hit and hit.get("ok"))
+
+
+def _ingest_docs(body, recs, have):
+    more, tot = parse_docs(body or "")
+    nadd = 0
+    for rec in more:
+        k = rec.get("eid") or rec.get("doi") or rec.get("title") or ""
+        if not k or k in have:
+            continue
+        have.add(k)
+        recs.append(rec)
+        nadd += 1
+    return more, tot, nadd
+
+
+def _js_search_fetch(pg, url, body_obj):
+    return pg.evaluate("""async (arg) => {
+        const r = await fetch(arg.url, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json','Accept':'application/json'},
+            credentials: 'include',
+            body: JSON.stringify(arg.body)
+        });
+        return await r.text();
+    }""", {"url": url, "body": body_obj})
+
+
 def fetch_rest(pg, box, query, recs, total):
-    base = gateway_base(surl(pg))
+    """Page remaining hits. The mlkd proxy ignores JSON offset; try URL params then UI Next."""
+    base = (gateway_base(surl(pg)) or "").rstrip("/")
     have = set((r.get("eid") or r.get("doi") or r.get("title") or "") for r in recs)
     offset = len(recs)
     limit = 10
-    while total and offset < min(int(total), 2000):
+    cap = min(int(total or 0), 2000)
+    sid = None
+    for item in box.get("net") or []:
+        m = re.search(r'"searchId"\s*:\s*"([^"]+)"', item.get("b") or "")
+        if m:
+            sid = m.group(1)
+            break
+    captured = {}
+    raw_post = (box.get("search_post") or {}).get("post") or ""
+    if raw_post:
         try:
-            body = pg.evaluate("""async (arg) => {
-                const payloads = [
-                    {query: arg.q, offset: arg.offset, limit: arg.limit, documentType: 's'},
-                    {query: arg.q, start: arg.offset, count: arg.limit, documentType: 's'},
-                    {query: arg.q, offset: arg.offset, limit: arg.limit, documentType: 's',
-                     metadata: {offset: arg.offset, itemCount: arg.limit}}
-                ];
-                let last = '';
-                for (const b of payloads) {
-                    const r = await fetch(arg.base + '/gateway/documents/search', {
-                        method: 'POST',
-                        headers: {'Content-Type':'application/json','Accept':'application/json'},
-                        credentials: 'include',
-                        body: JSON.stringify(b)
-                    });
-                    const t = await r.text();
-                    last = t;
-                    if (t && t.indexOf('"eid"') >= 0 && t.length > 200) return t;
-                }
-                return last;
-            }""", {"base": base, "q": query, "offset": offset, "limit": limit})
-        except Exception as e:
-            log("[page-err]", offset, str(e)[:80])
-            break
-        more, tot = parse_docs(body or "")
-        if tot:
-            total = tot
-        if not more:
-            log("[page-empty]", offset, (body or "")[:120])
-            break
+            captured = json.loads(raw_post)
+            log("[replay-post]", json.dumps(captured, ensure_ascii=False)[:240])
+        except Exception:
+            captured = {}
+
+    def pull(tag, body_txt):
+        more, tot, nadd = _ingest_docs(body_txt, recs, have)
+        if tot and (not total or tot >= int(total) or nadd):
+            return nadd, tot
+        return nadd, total
+
+    api_ok = False
+    while cap and offset < cap:
         nadd = 0
-        for rec in more:
-            k = rec.get("eid") or rec.get("doi") or rec.get("title") or ""
-            if not k or k in have:
-                continue
-            have.add(k)
-            recs.append(rec)
-            nadd += 1
-        log("[page]", offset, "got", len(more), "new", nadd, "have", len(recs), "/", total)
-        if nadd == 0:
+        primary = {
+            "query": query,
+            "documentClassification": "primary",
+            "resultSet": {"offset": offset, "itemCount": limit},
+            "sortBy": [
+                {"fieldName": "datesort", "order": "desc"},
+                {"fieldName": "relevance", "order": "desc"},
+            ],
+        }
+        bodies = [primary]
+        if captured and captured.get("documentClassification") != "preprint":
+            b = dict(captured)
+            rs = dict(b.get("resultSet") or {})
+            rs["offset"] = offset
+            rs["itemCount"] = int(rs.get("itemCount") or limit)
+            b["resultSet"] = rs
+            if b != primary:
+                bodies.append(b)
+        url = base + "/gateway/documents/search"
+        try:
+            for b in bodies:
+                txt = _js_search_fetch(pg, url, b)
+                nadd, total = pull("api", txt)
+                cap = min(int(total or cap), 2000)
+                log("[page-api]", offset, "new", nadd, "have", len(recs), "/", total)
+                if nadd:
+                    api_ok = True
+                    break
+        except Exception as e:
+            log("[page-api-err]", offset, str(e)[:80])
+            nadd = 0
+        if nadd:
+            offset = len(recs)
+            time.sleep(0.35)
+            continue
+        log("[page-api-miss]" if not api_ok else "[page-api-end]",
+            "offset", offset, "have", len(recs), "/", total)
+        break
+
+    while cap and len(recs) < cap:
+        prev = len(recs)
+        if not click_results_next(pg):
+            log("[page-ui] no next control")
             break
-        offset += max(len(more), limit)
-        time.sleep(0.4)
+        got = False
+        for _ in range(14):
+            time.sleep(1.1)
+            more, tot, nadd = _ingest_docs(box.get("docs") or "", recs, have)
+            if tot:
+                total, cap = tot, min(int(tot), 2000)
+            if nadd:
+                log("[page-ui]", "new", nadd, "have", len(recs), "/", total)
+                got = True
+                break
+        if not got:
+            log("[page-ui-stuck] have", len(recs), "/", total)
+            break
+        if len(recs) == prev:
+            break
+        time.sleep(0.3)
     return recs, total
 
 
@@ -1092,7 +1220,7 @@ def harvest(pg, day, box):
             log("[zero-try-next-syntax]", q)
     recs, total = parse_docs(box.get("docs") or "")
     log("[parsed-hook]", "n", len(recs), "total", total, "st", last_st, "q", used_q or queries[-1])
-    if recs and total and len(recs) < min(int(total), 500):
+    if recs and total and len(recs) < min(int(total), 2000):
         recs, total = fetch_rest(pg, box, used_q or queries[0], recs, total)
         log("[paged]", "n", len(recs), "total", total)
     if last_st == "ok" and not recs:
