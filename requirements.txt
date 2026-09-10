@@ -1,0 +1,7 @@
+camoufox
+playwright
+requests
+urllib3
+xlrd
+openpyxl
+Pillow
