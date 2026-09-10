@@ -192,13 +192,17 @@ def save_pw_cookies(context):
     ck = []
     try:
         for x in context.cookies():
+            d = str(x.get("domain") or "")
+            if "scidownload" not in d:
+                continue
             ck.append({
                 "name": x.get("name"), "value": x.get("value"),
-                "domain": x.get("domain") or "www.scidownload.com",
-                "path": x.get("path") or "/",
+                "domain": d, "path": x.get("path") or "/",
             })
     except Exception as e:
         log("[save-ck-err]", str(e)[:80])
+        return
+    if not ck:
         return
     json.dump({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "cookies": ck},
               open(SESSION_FILE, "w"), ensure_ascii=False, indent=1)
@@ -208,7 +212,13 @@ def save_pw_cookies(context):
 def load_pw_cookies():
     try:
         d = json.load(open(SESSION_FILE, encoding="utf-8"))
-        return d.get("cookies") or []
+        out = []
+        for c in d.get("cookies") or []:
+            dom = str(c.get("domain") or "")
+            name = str(c.get("name") or "")
+            if "scidownload" in dom or name.startswith("jtqet"):
+                out.append(c)
+        return out
     except Exception:
         return []
 
@@ -846,9 +856,33 @@ def wait_qid(pg, n=16, box=None):
     return qid, total if isinstance(total, int) else None
 
 
+def _wos_post(pg, path, raw_body, accept="*/*", timeout=180000):
+    grab_sid(pg)
+    sid = CURRENT_SID or ""
+    origin = _wos_origin(pg)
+    if not origin:
+        raise RuntimeError("no wos origin")
+    url = origin + path + (("?SID=" + sid) if sid and "SID=" not in path else "")
+    headers = {
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Accept": accept,
+        "x-1p-wos-sid": sid,
+        "Referer": surl(pg) or (origin + "/"),
+        "Origin": origin,
+    }
+    data = raw_body.encode("utf-8") if isinstance(raw_body, str) else raw_body
+    kwargs = {"data": data, "headers": headers, "timeout": timeout}
+    try:
+        r = pg.context.request.post(url, fail_on_status_code=False, **kwargs)
+    except TypeError:
+        r = pg.context.request.post(url, **kwargs)
+    return r, sid, url
+
+
 def api_search(pg, day):
-    """runQuerySearch on the current origin, SID from land URL / cookie."""
+    """runQuerySearch via in-page fetch (proxy rewrite). Do not use context.request."""
     install_hooks(pg)
+    grab_sid(pg)
     sid0 = CURRENT_SID
     try:
         r = pg.evaluate("""async (arg) => {
@@ -856,8 +890,6 @@ def api_search(pg, day):
             const sid = (location.href.match(/SID=([A-Za-z0-9]{12,48})/)||[])[1]
                 || (document.cookie.match(/(?:WOSSID|SID)=([A-Za-z0-9]{12,48})/)||[])[1]
                 || sid0 || '';
-            const cn = location.hostname.indexOf('clarivate.cn') >= 0;
-            const product = cn ? 'ALLDB' : 'WOSCC';
             const dop = day + '/' + day;
             const body = {"product":"WOSCC","searchMode":"general","viewType":"search","serviceMode":"summary",
               "search":{"mode":"general","database":"WOSCC","query":
@@ -871,7 +903,7 @@ def api_search(pg, day):
               headers:{'Content-Type':'text/plain;charset=UTF-8','Accept':'application/x-ndjson',
                        'x-1p-wos-sid': sid},
               body: JSON.stringify(body)});
-            return {code: rr.status, text: (await rr.text()).slice(0, 8000), url, sid};
+            return {code: rr.status, text: (await rr.text()).slice(0, 8000), sid};
         }""", {"day": day, "sid0": sid0})
     except Exception as e:
         log("[api-search-err]", str(e)[:120])
@@ -976,6 +1008,16 @@ def smart_search(pg, day):
     return qid, total if isinstance(total, int) else None
 
 
+def _wos_origin(pg):
+    u = surl(pg) or ""
+    m = re.match(r"(https?://[^/]+)", u)
+    return m.group(1) if m else ""
+
+
+def _looks_xls(data):
+    return bool(data) and (data[:4] == b"\xd0\xcf\x11\xe0" or data[:2] == b"PK")
+
+
 def page_export(pg, qid, a, b, raw):
     grab_sid(pg)
     sid = CURRENT_SID or ""
@@ -987,39 +1029,62 @@ def page_export(pg, qid, a, b, raw):
         "isRefQuery": "false", "locale": "zh_CN", "filters": "fullRecord"
     }, separators=(",", ":"))
     try:
-        r = pg.evaluate("""async (payload) => {
+        info = pg.evaluate("""async (payload) => {
             const sid = payload.sid || '';
             const url = location.origin + '/api/wosnx/indic/export/saveToFile';
-            const headerSets = [
-              {'Content-Type':'text/plain;charset=UTF-8','Accept':'*/*','x-1p-wos-sid':sid},
-              {'Content-Type':'application/x-www-form-urlencoded','Accept':'*/*','x-1p-wos-sid':sid},
-              {'Content-Type':'application/json','Accept':'*/*','x-1p-wos-sid':sid}
-            ];
-            let last = {code: 0, b64:'', head:''};
-            for (const headers of headerSets) {
-              const rr = await fetch(url, {method:'POST', headers, body: payload.body});
-              const head = (await rr.clone().text()).slice(0, 220);
-              last = {code: rr.status, b64:'', head, ctype: headers['Content-Type']};
-              if (rr.status !== 200) continue;
-              const buf = await rr.arrayBuffer();
-              let bin = '';
-              const bytes = new Uint8Array(buf);
-              for (let i = 0; i < bytes.length; i += 8192)
-                bin += String.fromCharCode.apply(null, bytes.subarray(i, i+8192));
-              return {code: rr.status, b64: btoa(bin), head:'', ctype: headers['Content-Type']};
+            const rr = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type':'text/plain;charset=UTF-8','Accept':'*/*','x-1p-wos-sid':sid},
+                body: payload.body
+            });
+            if (rr.status !== 200) {
+                const head = (await rr.text()).slice(0, 220);
+                return {ok:false, code: rr.status, head: head, n:0};
             }
-            return last;
+            const buf = await rr.arrayBuffer();
+            const blob = new Blob([buf]);
+            const dataUrl = await new Promise((resolve, reject) => {
+                const fr = new FileReader();
+                fr.onload = () => resolve(String(fr.result || ''));
+                fr.onerror = () => reject(new Error('read'));
+                fr.readAsDataURL(blob);
+            });
+            window.__wosxls = dataUrl;
+            return {ok:true, code:200, n: dataUrl.length};
         }""", {"body": body, "sid": sid})
-        if r.get("code") == 200 and r.get("b64"):
-            data = base64.b64decode(r["b64"])
-            open(raw, "wb").write(data)
-            log("[export %d-%d] %dKB %r" % (a, b, len(data) // 1024, data[:6]))
-            return True
-        log("[export fail]", r.get("code"), str(r.get("head") or "")[:180])
-        return False
     except Exception as e:
         log("[export-err]", str(e)[:130])
         return False
+    if not info or not info.get("ok"):
+        log("[export fail]", (info or {}).get("code"), str((info or {}).get("head") or "")[:180])
+        return False
+    n = int(info.get("n") or 0)
+    parts = []
+    off = 0
+    while off < n:
+        chunk = pg.evaluate("(a) => (window.__wosxls || '').slice(a.o, a.o + a.n)", {"o": off, "n": 8000})
+        if not chunk:
+            break
+        parts.append(chunk)
+        off += len(chunk)
+    try:
+        pg.evaluate("() => { window.__wosxls = ''; }")
+    except Exception:
+        pass
+    data_url = "".join(parts)
+    comma = data_url.find(",")
+    b64 = data_url[comma + 1:] if comma >= 0 else data_url
+    try:
+        data = base64.b64decode(b64)
+    except Exception as e:
+        log("[export-b64-err]", str(e)[:80], "n", n, "got", len(data_url))
+        return False
+    if not _looks_xls(data):
+        log("[export fail] not xls", data[:40])
+        return False
+    open(raw, "wb").write(data)
+    log("[export %d-%d] %dKB %r" % (a, b, len(data) // 1024, data[:6]))
+    return True
 
 
 def ingest(raw, out_path):
@@ -1162,26 +1227,31 @@ def harvest_from_page(pg, days):
         log("FAIL_NOT_LOGGED")
         return 2
     save_pw_cookies(pg.context)
-    app = None
-    used = None
+    last_rc = 3
     for eid, name in WOS_ENTRIES:
         app = open_entry(pg, eid, name)
-        if app is not None:
-            used = name
-            break
-    if app is None:
-        log("FAIL_LAND")
-        return 3
-    log("[using]", used)
-    save_pw_cookies(app.context)
-    wait_human_challenge(app)
-    rc = 0
-    for day in days:
-        r = harvest(app, day)
-        if r != 0:
-            rc = r
-            break
-    return rc
+        if app is None:
+            continue
+        log("[using]", name)
+        save_pw_cookies(app.context)
+        wait_human_challenge(app)
+        rc = 0
+        for day in days:
+            r = harvest(app, day)
+            if r != 0:
+                rc = r
+                log("[harvest-fail-next]", name, "rc", r)
+                break
+        else:
+            return 0
+        last_rc = rc
+        try:
+            if app is not pg:
+                app.close()
+        except Exception:
+            pass
+    log("FAIL_LAND")
+    return last_rc
 
 
 def run_days(days, wait_login=False, auto_login=False, headed=True, login_only=False):

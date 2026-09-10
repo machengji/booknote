@@ -699,8 +699,13 @@ def attach(pg, box):
                 box.setdefault("net", []).append({"u": u[:200], "st": r.status, "b": body[:3000]})
                 log("[net]", r.status, u[:120], re.sub(r"\s+", " ", body)[:160])
                 if "/gateway/documents/search" in u and "parsequery" not in u and '"items"' in body:
-                    box["docs"] = body
-                    log("[docs-hit]", u[:100], "len", len(body))
+                    recs, tot = parse_docs(body)
+                    if recs:
+                        box["docs"] = body
+                        log("[docs-hit]", u[:100], "n", len(recs), "total", tot, "len", len(body))
+                    elif not box.get("docs"):
+                        box["docs"] = body
+                        log("[docs-empty]", u[:100], "total", tot)
                 elif (not box.get("docs")) and re.search(r'"eid"|dc:identifier|totalResults|"entries"', body):
                     box["docs"] = body
                     log("[docs-hit]", u[:100], "len", len(body))
@@ -986,17 +991,29 @@ def fetch_rest(pg, box, query, recs, total):
     base = gateway_base(surl(pg))
     have = set((r.get("eid") or r.get("doi") or r.get("title") or "") for r in recs)
     offset = len(recs)
-    limit = 25
+    limit = 10
     while total and offset < min(int(total), 2000):
         try:
             body = pg.evaluate("""async (arg) => {
-                const r = await fetch(arg.base + '/gateway/documents/search', {
-                    method: 'POST',
-                    headers: {'Content-Type':'application/json','Accept':'application/json'},
-                    credentials: 'include',
-                    body: JSON.stringify({query: arg.q, offset: arg.offset, limit: arg.limit, documentType: 's'})
-                });
-                return await r.text();
+                const payloads = [
+                    {query: arg.q, offset: arg.offset, limit: arg.limit, documentType: 's'},
+                    {query: arg.q, start: arg.offset, count: arg.limit, documentType: 's'},
+                    {query: arg.q, offset: arg.offset, limit: arg.limit, documentType: 's',
+                     metadata: {offset: arg.offset, itemCount: arg.limit}}
+                ];
+                let last = '';
+                for (const b of payloads) {
+                    const r = await fetch(arg.base + '/gateway/documents/search', {
+                        method: 'POST',
+                        headers: {'Content-Type':'application/json','Accept':'application/json'},
+                        credentials: 'include',
+                        body: JSON.stringify(b)
+                    });
+                    const t = await r.text();
+                    last = t;
+                    if (t && t.indexOf('"eid"') >= 0 && t.length > 200) return t;
+                }
+                return last;
             }""", {"base": base, "q": query, "offset": offset, "limit": limit})
         except Exception as e:
             log("[page-err]", offset, str(e)[:80])
