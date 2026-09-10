@@ -21,3 +21,12 @@ data/
 venv/
 .idea/
 .vscode/
+*.pkl
+*_cookies.json
+*_cookies.json.ua
+*_dois.txt
+*_done.txt
+*_miss.txt
+*_todo.txt
+config.local.json
+pdfs/

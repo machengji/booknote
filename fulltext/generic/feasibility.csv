@@ -1,0 +1,101 @@
+﻿序号,数据库/平台,原表记录数,测试条数,成功条数,失败条数,成功率,失败原因,结论,批次
+1,J-STAGE,33660,10,10,0,1.0,无,可行,主要20库
+2,Korean Journal of Physiology & Pharmacology,762,5,5,0,1.0,无,可行,剩余80库
+3,其他独立期刊/平台（ijbms.mums.ac.ir）,462,5,5,0,1.0,无,可行,剩余80库
+4,Frontiers,455,5,5,0,1.0,无,可行,剩余80库
+5,Clinical Psychopharmacology and Neuroscience,235,5,5,0,1.0,无,可行,剩余80库
+6,Brieflands,201,5,5,0,1.0,无,可行,剩余80库
+7,Baltic Journal of Road and Bridge Engineering,127,5,5,0,1.0,无,可行,剩余80库
+8,Society for Imaging Science and Technology,56,5,5,0,1.0,无,可行,剩余80库
+9,Techno-Press,56,5,5,0,1.0,无,可行,剩余80库
+10,Medical Journals Sweden,52,5,5,0,1.0,无,可行,剩余80库
+11,STFM Journals,50,5,5,0,1.0,无,可行,剩余80库
+12,Journal of Neurosurgery Publishing Group,50,5,5,0,1.0,无,可行,剩余80库
+13,其他独立期刊/平台（imim.pl）,42,5,5,0,1.0,无,可行,剩余80库
+14,Institute of Navigation,30,5,5,0,1.0,无,可行,剩余80库
+15,Experimental Biology and Medicine,30,5,5,0,1.0,无,可行,剩余80库
+16,Human Kinetics Journals,23,5,5,0,1.0,无,可行,剩余80库
+17,其他独立期刊/平台（stet-review.org）,21,5,5,0,1.0,无,可行,剩余80库
+18,其他独立期刊/平台（storage.forummmpub.com）,12,5,5,0,1.0,无,可行,剩余80库
+19,Microbiology Society,12,5,5,0,1.0,无,可行,剩余80库
+20,其他独立期刊/平台（schweizerbart.de）,12,5,5,0,1.0,无,可行,剩余80库
+21,其他独立期刊/平台（revistabiomedica.org）,12,5,5,0,1.0,无,可行,剩余80库
+22,其他独立期刊/平台（leprosyreview.org）,11,5,5,0,1.0,无,可行,剩余80库
+23,其他独立期刊/平台（cdn.techscience.press）,10,5,5,0,1.0,无,可行,剩余80库
+24,其他独立期刊/平台（kovmat.sav.sk）,10,5,5,0,1.0,无,可行,剩余80库
+25,其他独立期刊/平台（lmaleidykla.lt）,9,5,5,0,1.0,无,可行,剩余80库
+26,其他独立期刊/平台（bp.ueb.cas.cz）,6,5,5,0,1.0,无,可行,剩余80库
+27,其他独立期刊/平台（aimnet.it）,5,5,5,0,1.0,无,可行,剩余80库
+28,其他独立期刊/平台（por-journal.com）,5,5,5,0,1.0,无,可行,剩余80库
+29,其他独立期刊/平台（technology.matthey.com）,3,3,3,0,1.0,无,可行,剩余80库
+30,SpringerLink,32301,10,8,2,0.8,hard_timeout:2,可行,主要20库
+31,其他独立期刊/平台（koreascience.or.kr）,25,5,4,1,0.8,request_error:1,可行,剩余80库
+32,其他独立期刊/平台（comptes-rendus.academie-sciences.fr）,11,5,4,1,0.8,hard_timeout:1,可行,剩余80库
+33,AMS Journals,114,5,3,2,0.6,html_page:1; hard_timeout:1,可行,剩余80库
+34,其他独立期刊/平台（ijdb.ehu.eus）,5,5,3,2,0.6,hard_timeout:2,可行,剩余80库
+35,BMC / BioMed Central,1410,10,6,4,0.6,hard_timeout:4,部分可行,主要20库
+36,IEEE Xplore,2051,10,5,5,0.5,html_page:5,部分可行,主要20库
+37,Brill,2308,10,4,6,0.4,html_page:6,部分可行,主要20库
+38,Begell House,233,5,2,3,0.4,html_page:3,部分可行,剩余80库
+39,SciELO,695,5,1,4,0.2,forbidden:3; http_error:1,部分可行,剩余80库
+40,Thieme Connect,1497,10,1,9,0.1,anti_bot:9,部分可行,主要20库
+41,Wiley Online Library,17814,10,0,10,0.0,anti_bot:9; timeout:1,当前不可直接下载,主要20库
+42,Oxford Academic,8844,10,0,10,0.0,anti_bot:10,当前不可直接下载,主要20库
+43,IOPscience,5971,10,0,10,0.0,html_page:10,当前不可直接下载,主要20库
+44,Taylor & Francis Online,4839,10,0,10,0.0,anti_bot:10,当前不可直接下载,主要20库
+45,PubMed / PubMed Central,4263,10,0,10,0.0,invalid_url:7; html_page:3,当前不可直接下载,主要20库
+46,MDPI,4063,10,0,10,0.0,forbidden:10,当前不可直接下载,主要20库
+47,SAGE Journals,3485,10,0,10,0.0,request_error:10,当前不可直接下载,主要20库
+48,BioOne Complete,2462,10,0,10,0.0,html_page:10,当前不可直接下载,主要20库
+49,Ovid,2225,10,0,10,0.0,html_page:10,当前不可直接下载,主要20库
+50,Project MUSE,1898,10,0,10,0.0,timeout:5; http_error:5,当前不可直接下载,主要20库
+51,EBSCOhost,1240,10,0,10,0.0,forbidden:10,当前不可直接下载,主要20库
+52,AIP Publishing,1140,10,0,10,0.0,anti_bot:10,当前不可直接下载,主要20库
+53,De Gruyter Brill,1098,10,0,10,0.0,html_page:9; request_error:1,当前不可直接下载,主要20库
+54,JoVE,817,10,0,10,0.0,invalid_url:10,当前不可直接下载,主要20库
+55,RSC Publishing,707,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+56,Optica Publishing Group,678,5,0,5,0.0,html_page:5,当前不可直接下载,剩余80库
+57,ASME Digital Collection,583,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+58,World Scientific,556,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+59,ACS Publications,555,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+60,ASCE Library,372,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+61,DOI Serbia,310,5,0,5,0.0,timeout:5,当前不可直接下载,剩余80库
+62,KGL Meridian,292,5,0,5,0.0,html_page:5,当前不可直接下载,剩余80库
+63,Karger,271,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+64,Duke University Press,213,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+65,University of Chicago Press,195,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+66,Emerald Insight,187,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+67,ACM Digital Library,185,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+68,APA PsycNet,148,5,0,5,0.0,html_page:5,当前不可直接下载,剩余80库
+69,De Gruyter,145,5,0,5,0.0,html_page:5,当前不可直接下载,剩余80库
+70,Canadian Science Publishing,127,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+71,ConnectSci,124,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+72,Inter-Research,111,5,0,5,0.0,unauthorized:5,当前不可直接下载,剩余80库
+73,Anticancer Research,106,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+74,ASTM Compass,105,5,0,5,0.0,forbidden:5,当前不可直接下载,剩余80库
+75,Inderscience,88,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+76,Rice University EZproxy,68,5,0,5,0.0,html_page:5,当前不可直接下载,剩余80库
+77,Nature Portfolio,67,5,0,5,0.0,html_page:4; timeout:1,当前不可直接下载,剩余80库
+78,MIT Press Direct,59,5,0,5,0.0,anti_bot:4; request_error:1,当前不可直接下载,剩余80库
+79,Mary Ann Liebert,58,5,0,5,0.0,request_error:5,当前不可直接下载,剩余80库
+80,Bentham Science / EurekaSelect,58,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+81,ScienceDirect,47,5,0,5,0.0,forbidden:5,当前不可直接下载,剩余80库
+82,Lippincott Williams & Wilkins,40,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+83,其他独立期刊/平台（kjmm.org）,27,5,0,5,0.0,html_page:5,当前不可直接下载,剩余80库
+84,Alliance of Medical Publishers,23,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+85,AIAA Aerospace Research Central,22,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+86,APS Journals,20,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+87,The Company of Biologists,19,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+88,其他独立期刊/平台（journalssystem.com）,16,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+89,Scholarly Publishing Collective,14,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+90,University of California Press,14,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+91,Molecular Biology of the Cell,13,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+92,AACR Journals,13,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+93,NIScPR Online Periodicals,11,5,0,5,0.0,timeout:5,当前不可直接下载,剩余80库
+94,IGI Global,10,5,0,5,0.0,rate_limited:5,当前不可直接下载,剩余80库
+95,其他独立期刊/平台（periodicodimineralogia.com）,10,5,0,5,0.0,http_error:5,当前不可直接下载,剩余80库
+96,GeoScienceWorld,9,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+97,IUCr Journals,8,5,0,5,0.0,request_error:3; anti_bot:2,当前不可直接下载,剩余80库
+98,Hindawi,5,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+99,American Physiological Society,5,5,0,5,0.0,anti_bot:5,当前不可直接下载,剩余80库
+100,其他独立期刊/平台（learnmem.cshlp.org）,2,2,0,2,0.0,anti_bot:2,当前不可直接下载,剩余80库

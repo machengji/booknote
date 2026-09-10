@@ -1,6 +1,6 @@
 # booknote
 
-WoS / Scopus 每日题录采集。仓库只放代码，不放账号、cookie、JSONL。
+WoS / Scopus 每日题录采集，以及各库全文 PDF 下载。仓库只放代码，不放账号、cookie、JSONL、PDF。
 
 浏览器只用 **Camoufox**，有头窗口，复用 scihuber cookie。不要 OCR 刷登录，不要多开同一帐号。
 
@@ -67,6 +67,24 @@ cookie 过期时任务会停在登录页。再跑一次 `--wait-login` 即可。
 | --- | --- | --- |
 | WoS | `BOOKNOTE_DATA/wos/wos_YYYY-MM.jsonl` | `scihuber_state.json` |
 | Scopus | `BOOKNOTE_DATA/scopus/scopus_YYYY-MM.jsonl` | `scopus_state.json` |
+
+## 全文 PDF
+
+流程和分库入口见 [`fulltext/FLOWS.md`](fulltext/FLOWS.md)。
+
+公开 PDF：
+
+```bat
+python fulltext/generic/download_all.py --only-feasible
+```
+
+机构订阅（CSV 列 `id,pdf_url`）：
+
+```bat
+python fulltext/generic/real_crawl.py --map data\map.csv --limit 5
+```
+
+分库先铸会话再批量，例如 SAGE / T&F / IEEE / Wiley，脚本在 `fulltext/scid`、`fulltext/chaos`、`fulltext/zju`、`fulltext/zx`、`fulltext/wytsg`。
 
 ## 约束
 
