@@ -450,6 +450,198 @@ def api_first(pg, q, classification="primary", offset=0):
     return parse_docs(txt or "")
 
 
+AZ = [chr(c) for c in range(ord("a"), ord("z") + 1)]
+DOCTYPES = ["ar", "cp", "re", "ch", "bk", "ed", "er", "no", "le", "sh", "ip", "cr", "dp"]
+
+
+def _title_group(letter):
+    return " OR ".join("%s%s*" % (letter, b) for b in AZ)
+
+
+def _digit_group():
+    return " OR ".join("%d%d*" % (i, j) for i in range(10) for j in range(10))
+
+
+def parts_useful(parts, parent_tot):
+    """A split helps only if it shrinks the largest bucket below the 5000 window parent."""
+    if not parts:
+        return False
+    parent_tot = int(parent_tot or 0)
+    tots = [int(p[2] or 0) for p in parts]
+    mx = max(tots) if tots else 0
+    sm = sum(tots)
+    if mx >= parent_tot - 5:
+        return False
+    if sm < 10 and parent_tot > 100:
+        return False
+    return True
+
+
+def split_doctype(pg, q, tot):
+    tot = int(tot or 0)
+    parts = []
+    for t in DOCTYPES:
+        sq = "%s AND DOCTYPE(%s)" % (q, t)
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "D:"+t, n if n is not None else "-", sq[:90])
+        if not n:
+            continue
+        if n >= tot - 5:
+            log("[split-doctype-all]", t, n)
+            return []
+        parts.append((sq, recs, int(n), "D:"+t))
+    if tot - sum(p[2] for p in parts) > 30:
+        sq = "%s AND NOT DOCTYPE(%s)" % (q, " OR ".join(DOCTYPES))
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "D:rest", n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "D:rest"))
+    return parts
+
+
+def split_pubyear(pg, q, tot):
+    tot = int(tot or 0)
+    y0 = datetime.date.today().year + 1
+    years = list(range(y0, y0 - 12, -1))
+    parts = []
+    for y in years:
+        sq = "%s AND PUBYEAR(%d)" % (q, y)
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "Y:%d" % y, n if n is not None else "-")
+        if not n:
+            continue
+        if n >= tot - 5:
+            log("[split-year-all]", y, n)
+            return []
+        parts.append((sq, recs, int(n), "Y:%d" % y))
+    if tot - sum(p[2] for p in parts) > 30:
+        sq = "%s AND NOT PUBYEAR(%s)" % (q, " OR ".join(str(y) for y in years))
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "Y:rest", n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "Y:rest"))
+    return parts
+
+
+def split_letters(pg, q, tot):
+    tot = int(tot or 0)
+    parts = []
+    for a in AZ:
+        sq = "%s AND TITLE(%s)" % (q, _title_group(a))
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "let-%s" % a, n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "let-%s" % a))
+    sq = "%s AND TITLE(%s)" % (q, _digit_group())
+    recs, n = api_first(pg, sq)
+    log("[split-probe]", "let-09", n if n is not None else "-")
+    if n:
+        parts.append((sq, recs, int(n), "let-09"))
+    got = sum(p[2] for p in parts)
+    if tot - got > 30:
+        nots = ["NOT TITLE(%s)" % _title_group(a) for a in AZ]
+        nots.append("NOT TITLE(%s)" % _digit_group())
+        sq = "%s AND %s" % (q, " AND ".join(nots))
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "let-rest", n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "let-rest"))
+    return parts
+
+
+def split_bigrams(pg, q, tot, letter):
+    parts = []
+    for b in AZ:
+        sq = "%s AND TITLE(%s%s*)" % (q, letter, b)
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "bi-%s%s" % (letter, b), n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "bi-%s%s" % (letter, b)))
+    return parts
+
+
+def split_journals(pg, q, tot):
+    journals = fetch_source_facets(pg, q) or []
+    if not journals:
+        return []
+    parts = []
+    sm = 0
+    names = []
+    for name, cnt in journals:
+        if not name:
+            continue
+        names.append(name)
+        n = int(cnt or 0)
+        if n <= 0:
+            continue
+        sm += n
+        parts.append((source_query(q, name), [], n, "j"))
+    if names and int(tot or 0) - sm > 30:
+        q_rem, n_not = remainder_query(q, names)
+        parts.append((q_rem, [], max(int(tot or 0) - sm, 0), "jrem"))
+        log("[split-jrem]", "not", n_not, "sum-j", sm, "parent", tot)
+    return parts
+
+
+def splitters_for(kind):
+    if isinstance(kind, str) and kind.startswith("let-") and len(kind) == 5:
+        letter = kind[-1]
+        if letter in AZ:
+            L = letter
+            return [
+                ("bigram-" + L, lambda pg, q, t: split_bigrams(pg, q, t, L)),
+                ("journals", split_journals),
+            ]
+    if isinstance(kind, str) and kind.startswith("bi-"):
+        return [("journals", split_journals), ("pubyear", split_pubyear)]
+    return [
+        ("doctype", split_doctype),
+        ("letters", split_letters),
+        ("pubyear", split_pubyear),
+        ("journals", split_journals),
+    ]
+
+
+def harvest_over_window(pg, box, q, recs0, total, run_query, depth=0, kind="root"):
+    """Page a query if it fits in the 5000-hit API window; otherwise split and recurse."""
+    tot = int(total or 0)
+    if tot <= 0:
+        if recs0:
+            run_query(q, recs0, len(recs0))
+        return
+    if tot <= API_WINDOW:
+        run_query(q, recs0 or [], tot)
+        return
+    if depth >= 8:
+        log("[split-depth]", tot, q[:100])
+        run_query(q, recs0 or [], tot)
+        return
+    log("[split]", "depth", depth, "tot", tot, "kind", kind, q[:140])
+    used = None
+    parts = None
+    for name, fn in splitters_for(kind):
+        try:
+            cand = fn(pg, q, tot) or []
+        except Exception as e:
+            log("[split-err]", name, str(e)[:100])
+            cand = []
+        if parts_useful(cand, tot):
+            parts = cand
+            used = name
+            break
+        log("[split-skip]", name, "n", len(cand),
+            "max", max((p[2] for p in cand), default=0))
+    if not parts:
+        log("[split-giveup]", tot, q[:100])
+        run_query(q, recs0 or [], tot)
+        return
+    log("[split-ok]", used, "n", len(parts),
+        "max", max(p[2] for p in parts), "sum", sum(p[2] for p in parts),
+        "parent", tot)
+    for pq, prec, ptot, pkind in parts:
+        harvest_over_window(pg, box, pq, prec, ptot, run_query, depth + 1, pkind)
+
+
 def sci_cookies(saved):
     out = []
     for c in saved or []:
@@ -1489,7 +1681,9 @@ def harvest(pg, day, box):
         for line in open(out_path, encoding="utf-8"):
             try:
                 v = json.loads(line)
-                have.add(v.get("eid") or v.get("doi") or "")
+                k = v.get("eid") or v.get("doi") or v.get("title") or ""
+                if k:
+                    have.add(k)
                 if v.get("load_date") == day:
                     n_day_before += 1
             except Exception:
@@ -1512,68 +1706,26 @@ def harvest(pg, day, box):
         return added_n
 
     def _run_query(q, recs0, tot0):
+        recs0 = list(recs0 or [])
+        tot0 = int(tot0 or 0)
+        if not recs0 and tot0:
+            recs0, tot0 = api_first(pg, q)
+            tot0 = int(tot0 or 0)
+            recs0 = list(recs0 or [])
         _append(recs0)
         got = list(recs0)
-        if recs0 and tot0 and len(recs0) < min(page_cap(tot0), API_WINDOW):
+        cap = min(page_cap(tot0 or 0), API_WINDOW)
+        if tot0 and len(got) < cap:
             got, tot0 = fetch_rest(pg, box, q, got, tot0, on_page=_append)
             log("[paged]", q[:80], "n", len(got), "total", tot0)
         return got, tot0
 
-    recs, total = _run_query(used_q or queries[0], recs, total)
+    used_q = used_q or queries[0]
+    _append(recs)
     if total and int(total) > API_WINDOW:
-        base_q = used_q or queries[0]
-        known_src = set()
-        harvested_src = set()
-        for name, _cnt in fetch_source_facets(pg, base_q) or []:
-            if name:
-                known_src.add(name)
-        stall = 0
-        for rnd in range(60):
-            have_day = n_day_before + added_box[0]
-            if have_day >= int(total) - 5:
-                log("[peel-done]", have_day, "/", total, "round", rnd)
-                break
-            pending = [s for s in known_src if s and s not in harvested_src]
-            if pending:
-                log("[peel]", "round", rnd, "pending", len(pending), "have", have_day, "/", total)
-                for s in pending:
-                    sq = source_query(base_q, s)
-                    srecs, stot = api_first(pg, sq)
-                    log("[j-hit]", stot, "n", len(srecs), s[:60])
-                    if srecs:
-                        _run_query(sq, srecs, stot)
-                        for rec in srecs:
-                            if rec.get("source"):
-                                known_src.add(rec["source"])
-                    harvested_src.add(s)
-                stall = 0
-                continue
-            q_rem, n_not = remainder_query(base_q, harvested_src)
-            more_j = fetch_source_facets(pg, q_rem)
-            added_names = 0
-            for name, _cnt in more_j or []:
-                if name and name not in known_src:
-                    known_src.add(name)
-                    added_names += 1
-            log("[remain-facet]", "not", n_not, "new-j", added_names, "have", have_day, "/", total)
-            if added_names:
-                stall = 0
-                continue
-            rrecs, rtot = api_first(pg, q_rem)
-            log("[remain-page]", rtot, "n", len(rrecs))
-            if rrecs:
-                before = added_box[0]
-                _run_query(q_rem, rrecs, rtot)
-                for rec in rrecs:
-                    if rec.get("source"):
-                        known_src.add(rec["source"])
-                if added_box[0] > before:
-                    stall = 0
-                    continue
-            stall += 1
-            if stall >= 3:
-                log("[peel-stop]", "no more journals", have_day, "/", total)
-                break
+        harvest_over_window(pg, box, used_q, recs, total, _run_query)
+    else:
+        recs, total = _run_query(used_q, recs, total)
     if last_st == "ok" and not recs:
         recs = export_csv(pg, box)
         total = total or len(recs)
