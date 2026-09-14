@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -74,12 +75,16 @@ def main():
             rc = r
     else:
         wos.log("[daily-wos] nothing to do")
-    for day in scp_days:
+    for i, day in enumerate(scp_days):
         r = scopus.run_day(day, headed=headed)
         wos.log("[daily-scopus]", day, "ok" if r == 0 else "rc=%d" % r)
         if r:
             rc = r
             break
+        if i + 1 < len(scp_days):
+            gap = scopus.SCOPUS_DAY_GAP
+            wos.log("[daily-scopus-gap]", "%.0fs" % gap)
+            time.sleep(gap)
     if not scp_days:
         wos.log("[daily-scopus] nothing to do")
     return rc

@@ -3,7 +3,7 @@
 对照 WoS Java：先检索拿结果，再按页导出。不自动登录 scihuber。
 用法: python harvest/scopus_pipeline.py [--headed] [YYYY-MM-DD]
 """
-import sys, os, json, time, re, datetime, traceback
+import sys, os, json, time, re, datetime, traceback, random
 
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 for _k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
@@ -18,6 +18,19 @@ from wos_pipeline import (
 
 def log(*a):
     print(" ".join(str(x) for x in a), flush=True)
+
+
+def problem(kind, *a):
+    msg = time.strftime("%Y-%m-%d %H:%M:%S") + " [" + kind + "] " + " ".join(str(x) for x in a)
+    print(msg, flush=True)
+    try:
+        logdir = os.environ.get("BOOKNOTE_LOG") or os.path.join(
+            os.environ.get("BOOKNOTE_DATA", r"E:\pubmed"), "logs")
+        os.makedirs(logdir, exist_ok=True)
+        with open(os.path.join(logdir, "scopus_problems.log"), "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
 
 ANTI_DEBUG = r"""
@@ -221,9 +234,220 @@ os.makedirs(RAW, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 ENTRIES = [
-    (5460, "Scopus(mlkd)"),
     (5841, "Scopus(Kr1)"),
+    (5460, "Scopus(mlkd)"),
+    (6112, "Scopus(NCU)"),
 ]
+
+
+def page_cap(total):
+    """No default cap: download the whole day's hit count. Optional BOOKNOTE_SCOPUS_MAX."""
+    t = int(total or 0)
+    raw = (os.environ.get("BOOKNOTE_SCOPUS_MAX") or "").strip()
+    if raw:
+        return min(t, int(raw))
+    return t
+
+
+# New Scopus documents/search rejects resultSet.offset+itemCount > 5000.
+API_WINDOW = 5000
+
+# Space out gateway calls so Elsevier does not treat the session as a scraper.
+# Override with BOOKNOTE_SCOPUS_GAP / _JITTER / _BURST_EVERY / _BURST_PAUSE.
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name) or default)
+    except Exception:
+        return float(default)
+
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except Exception:
+        return int(default)
+
+
+SCOPUS_GAP = _env_float("BOOKNOTE_SCOPUS_GAP", 3.5)
+SCOPUS_GAP_JITTER = _env_float("BOOKNOTE_SCOPUS_GAP_JITTER", 1.8)
+SCOPUS_BURST_EVERY = _env_int("BOOKNOTE_SCOPUS_BURST_EVERY", 18)
+SCOPUS_BURST_PAUSE = _env_float("BOOKNOTE_SCOPUS_BURST_PAUSE", 16.0)
+SCOPUS_DAY_GAP = _env_float("BOOKNOTE_SCOPUS_DAY_GAP", 25.0)
+_last_api = [0.0]
+_api_n = [0]
+_backoff = [0.0]
+
+
+def note_http_status(st, body=""):
+    try:
+        st = int(st)
+    except Exception:
+        return
+    blob = (body or "")[:400].lower()
+    limited = st in (429, 418, 503) or bool(
+        re.search(r"too many requests|rate.?limit|unusual traffic|captcha", blob)
+    )
+    if limited:
+        _backoff[0] = min(180.0, max(25.0, (_backoff[0] or 12.0) * 2.0))
+        log("[pace-backoff]", "http", st, "wait", "%.0fs" % _backoff[0])
+        problem("RATE", "http", st, "backoff", "%.0f" % _backoff[0])
+    elif st in (403, 401):
+        _backoff[0] = min(90.0, max(8.0, _backoff[0] + 8.0))
+        log("[pace-auth]", "http", st, "wait", "%.0fs" % _backoff[0])
+    elif st == 200 and _backoff[0]:
+        _backoff[0] = max(0.0, _backoff[0] * 0.4)
+
+
+def pace(kind="api"):
+    """Sleep until the next search/facet call is allowed."""
+    wait = SCOPUS_GAP + random.random() * SCOPUS_GAP_JITTER + (_backoff[0] or 0.0)
+    elapsed = time.time() - _last_api[0]
+    sl = wait - elapsed if _last_api[0] else min(wait, 0.8)
+    if sl > 0.05:
+        if sl >= 1.0 or _api_n[0] % 8 == 0:
+            log("[pace]", kind, "%.1fs" % sl, "n", _api_n[0],
+                "back", "%.0f" % _backoff[0])
+        time.sleep(sl)
+    _last_api[0] = time.time()
+    _api_n[0] += 1
+    if SCOPUS_BURST_EVERY and _api_n[0] % SCOPUS_BURST_EVERY == 0:
+        bp = SCOPUS_BURST_PAUSE + random.random() * 8.0
+        log("[pace-burst]", _api_n[0], "%.1fs" % bp)
+        time.sleep(bp)
+        _last_api[0] = time.time()
+
+
+def letter_shards(q):
+    # Scopus rejects single-character wildcards (TITLE(a*)). Use two letters.
+    az = [chr(c) for c in range(ord("a"), ord("z") + 1)]
+    shards = []
+    for a in az:
+        ors = " OR ".join("%s%s*" % (a, b) for b in az)
+        shards.append("%s AND TITLE(%s)" % (q, ors))
+    return shards
+
+
+def extra_shards(q):
+    """Catch titles that are not English two-letter prefixes (digits, CJK, symbols)."""
+    az = [chr(c) for c in range(ord("a"), ord("z") + 1)]
+    digits = " OR ".join("%d%d*" % (i, j) for i in range(10) for j in range(10))
+    out = ["%s AND TITLE(%s)" % (q, digits)]
+    nots = []
+    for a in az:
+        ors = " OR ".join("%s%s*" % (a, b) for b in az)
+        nots.append("NOT TITLE(%s)" % ors)
+    nots.append("NOT TITLE(%s)" % digits)
+    out.append("%s AND %s" % (q, " AND ".join(nots)))
+    return out
+
+
+def doctype_shards(q):
+    types = ["ar", "cp", "re", "ch", "bk", "ed", "er", "no", "le", "sh", "ip"]
+    shards = ["%s AND DOCTYPE(%s)" % (q, t) for t in types]
+    shards.append("%s AND NOT DOCTYPE(%s)" % (q, " OR ".join(types)))
+    return shards
+
+
+def parse_srctitle_facets(txt):
+    out = []
+    try:
+        j = json.loads(txt or "")
+    except Exception:
+        return out
+    ff = j.get("facetFields") or {}
+    rows = ff.get("srctitle") or ff.get("sourceTitle") or []
+    for row in rows:
+        if isinstance(row, dict):
+            for k, v in row.items():
+                try:
+                    out.append((str(k), int(v)))
+                except Exception:
+                    pass
+    out.sort(key=lambda x: -x[1])
+    return out
+
+
+def fetch_source_facets(pg, query):
+    """Today's journals only (not the whole 40k list)."""
+    base = (gateway_base(surl(pg)) or "").rstrip("/")
+    bodies = [
+        {"query": query, "documentClassification": "primary",
+         "requestedFacets": [{"field": "srctitle", "count": 5000}]},
+        {"query": query, "documentClassification": "primary", "facetFields": ["srctitle"],
+         "facetLimit": 5000, "max": 5000, "size": 5000, "count": 5000},
+        {"query": query, "documentType": "s", "facetFields": ["srctitle"], "count": 5000},
+    ]
+    last = ""
+    for b in bodies:
+        pace("facet")
+        try:
+            r = pg.evaluate("""async (arg) => {
+                const rr = await fetch(arg.base + '/gateway/document-facet-api/facets', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json','Accept':'application/json'},
+                    credentials: 'include',
+                    body: JSON.stringify(arg.body)
+                });
+                const t = await rr.text();
+                return {st: rr.status, t: t};
+            }""", {"base": base, "body": b})
+        except Exception as e:
+            log("[facet-err]", str(e)[:80])
+            continue
+        st = (r or {}).get("st") if isinstance(r, dict) else None
+        txt = (r or {}).get("t") if isinstance(r, dict) else (r or "")
+        last = txt or last
+        note_http_status(st, txt)
+        journals = parse_srctitle_facets(txt or "")
+        if journals:
+            log("[journals]", "n", len(journals), "top",
+                json.dumps(journals[:8], ensure_ascii=False)[:400],
+                "sum", sum(c for _, c in journals))
+            return journals
+    journals = parse_srctitle_facets(last or "")
+    log("[journals]", "n", len(journals), "top", json.dumps(journals[:8], ensure_ascii=False)[:400],
+        "sum", sum(c for _, c in journals))
+    return journals
+
+
+def source_query(base_q, name):
+    esc = (name or "").replace("\\", "\\\\").replace('"', '\\"')
+    return '%s AND EXACTSRCTITLE("%s")' % (base_q, esc)
+
+
+def remainder_query(base_q, names, max_chars=18000):
+    q = base_q
+    n = 0
+    for s in names:
+        if not s:
+            continue
+        clause = ' AND NOT EXACTSRCTITLE("%s")' % (s.replace("\\", "\\\\").replace('"', '\\"'))
+        if len(q) + len(clause) > max_chars:
+            break
+        q += clause
+        n += 1
+    return q, n
+
+
+def api_first(pg, q, classification="primary", offset=0):
+    base = (gateway_base(surl(pg)) or "").rstrip("/")
+    url = base + "/gateway/documents/search"
+    body = {
+        "query": q,
+        "resultSet": {"offset": int(offset or 0), "itemCount": 1000},
+        "sortBy": [
+            {"fieldName": "datesort", "order": "desc"},
+            {"fieldName": "relevance", "order": "desc"},
+        ],
+    }
+    if classification:
+        body["documentClassification"] = classification
+    try:
+        txt = _js_search_fetch(pg, url, body)
+    except Exception as e:
+        log("[api-first-err]", str(e)[:80], q[:60])
+        return [], None
+    return parse_docs(txt or "")
 
 
 def sci_cookies(saved):
@@ -282,6 +506,8 @@ def is_scopus_home(u, t):
     u = u or ""
     t = t or ""
     if "票据失效" in t or "Sorry, you have been blocked" in t:
+        return False
+    if "Scopus Preview" in t:
         return False
     if "登录冲突" in t:
         return False
@@ -424,7 +650,7 @@ def open_entry(pg, eid, name):
                 return None
     jumped = False
     dead = 0
-    for i in range(20):
+    for i in range(16):
         time.sleep(3)
         try:
             pages = list(pg.context.pages)
@@ -470,11 +696,7 @@ def open_entry(pg, eid, name):
                         log("[retry-showinfo-err]", str(e)[:80])
                 continue
             if "403 Forbidden" in (t or "") and re.search(r"lunwen\.one|kscopus|downsci\.top|mlkd\.php", u or "", re.I):
-                dead += 1
-                log("[hop]", dead, (u or "")[:100])
-                if dead >= 3:
-                    log("[skip-entry]", name, "403 hop")
-                    return None
+                log("[hop-wait]", (u or "")[:100])
                 continue
             if "ersp.lib.whu.edu.cn" in (u or "") or "cwres.ncu.edu.cn" in (u or ""):
                 log("[skip-proxy]", name, "user-skip 南大/武大")
@@ -592,17 +814,6 @@ def fill_and_search(pg, day, q=None):
             return {x:r.x + Math.min(80, r.width/3), y:r.y + Math.min(40, r.height/2)};
         }""")
     log("[editor]", box)
-    if box:
-        pg.mouse.click(box["x"], box["y"])
-        time.sleep(0.35)
-        try:
-            pg.keyboard.press("Control+A")
-            time.sleep(0.1)
-            pg.keyboard.press("Backspace")
-        except Exception:
-            pass
-        pg.keyboard.type(q, delay=25)
-        log("[typed-keys]", q)
     try:
         pg.evaluate("""(q) => {
             try {
@@ -669,8 +880,9 @@ def wait_results(pg, box, n=36):
         t = page_text(pg)
         st = results_ready(pg)
         log("[res %d]" % i, st or "-", (u or "")[:100], (t or "").replace("\n", " ")[:130])
-        if box.get("docs"):
-            log("[have-json]")
+        recs0, tot0 = parse_docs(box.get("docs") or "")
+        if recs0:
+            log("[have-json]", len(recs0), "total", tot0)
             return True
         if st == "zero":
             log("[zero]")
@@ -722,6 +934,8 @@ def attach(pg, box):
                     body = (r.text() or "")[:80000]
             except Exception:
                 body = ""
+            if "/gateway/documents/search" in u or "document-facet-api" in u:
+                note_http_status(r.status, body)
             if body:
                 box.setdefault("net", []).append({"u": u[:200], "st": r.status, "b": body[:3000]})
                 log("[net]", r.status, u[:120], re.sub(r"\s+", " ", body)[:160])
@@ -730,8 +944,7 @@ def attach(pg, box):
                     if recs:
                         box["docs"] = body
                         log("[docs-hit]", u[:100], "n", len(recs), "total", tot, "len", len(body))
-                    elif not box.get("docs"):
-                        box["docs"] = body
+                    else:
                         log("[docs-empty]", u[:100], "total", tot)
                 elif (not box.get("docs")) and re.search(r'"eid"|dc:identifier|totalResults|"entries"', body):
                     box["docs"] = body
@@ -799,12 +1012,25 @@ def parse_docs(body):
         cited = e.get("citedby-count") or e.get("citedByCount")
         if cited is None and isinstance(e.get("citations"), dict):
             cited = e["citations"].get("count")
+        src = e.get("prism:publicationName") or e.get("publicationName") or e.get("sourceTitle") or e.get("sourceName")
+        issn = e.get("prism:issn") or e.get("issn")
+        sid = e.get("sourceId") or e.get("srcid")
+        if isinstance(e.get("source"), dict):
+            so = e["source"]
+            src = src or so.get("name") or so.get("title") or so.get("publicationName")
+            issn = issn or so.get("issn") or so.get("issnPrint")
+            sid = sid or so.get("id") or so.get("sourceId")
+        if not recs and not getattr(parse_docs, "_keys_logged", False):
+            parse_docs._keys_logged = True
+            log("[item-keys]", list(e.keys())[:40])
         rec = {
             "eid": _txt(e.get("eid") or e.get("dc:identifier")),
             "doi": _txt(e.get("prism:doi") or e.get("doi")).replace("https://doi.org/", ""),
             "title": _txt(e.get("dc:title") or e.get("title")),
             "year": _txt(e.get("prism:coverDate") or e.get("coverDate") or e.get("publicationYear") or e.get("year"))[:4],
-            "source": _txt(e.get("prism:publicationName") or e.get("publicationName") or e.get("sourceTitle")),
+            "source": _txt(src),
+            "issn": _txt(issn),
+            "source_id": _txt(sid),
             "citedby": cited,
             "subtype": _txt(e.get("subtypeDescription") or e.get("documentType") or e.get("subtype")),
             "authors": _authors(e.get("dc:creator") or e.get("creator") or e.get("authors") or e.get("author")),
@@ -1063,24 +1289,38 @@ def _ingest_docs(body, recs, have):
 
 
 def _js_search_fetch(pg, url, body_obj):
-    return pg.evaluate("""async (arg) => {
-        const r = await fetch(arg.url, {
+    pace("search")
+    r = pg.evaluate("""async (arg) => {
+        const rr = await fetch(arg.url, {
             method: 'POST',
             headers: {'Content-Type':'application/json','Accept':'application/json'},
             credentials: 'include',
             body: JSON.stringify(arg.body)
         });
-        return await r.text();
+        const t = await rr.text();
+        return {st: rr.status, t: t};
     }""", {"url": url, "body": body_obj})
+    if isinstance(r, dict):
+        st = r.get("st")
+        txt = r.get("t") or ""
+    else:
+        st, txt = None, (r or "")
+    note_http_status(st, txt)
+    if st and st != 200:
+        log("[search-http]", st, "len", len(txt))
+        if st in (429, 418, 503, 403):
+            time.sleep(max(_backoff[0], 8.0))
+            _last_api[0] = time.time()
+    return txt
 
 
-def fetch_rest(pg, box, query, recs, total):
-    """Page remaining hits. The mlkd proxy ignores JSON offset; try URL params then UI Next."""
+def fetch_rest(pg, box, query, recs, total, on_page=None):
+    """Page remaining hits with resultSet.offset. Cap via BOOKNOTE_SCOPUS_MAX."""
     base = (gateway_base(surl(pg)) or "").rstrip("/")
     have = set((r.get("eid") or r.get("doi") or r.get("title") or "") for r in recs)
     offset = len(recs)
     limit = 10
-    cap = min(int(total or 0), 2000)
+    cap = min(page_cap(total), API_WINDOW)
     sid = None
     for item in box.get("net") or []:
         m = re.search(r'"searchId"\s*:\s*"([^"]+)"', item.get("b") or "")
@@ -1103,43 +1343,62 @@ def fetch_rest(pg, box, query, recs, total):
         return nadd, total
 
     api_ok = False
+    sized = False
     while cap and offset < cap:
         nadd = 0
-        primary = {
-            "query": query,
-            "documentClassification": "primary",
-            "resultSet": {"offset": offset, "itemCount": limit},
-            "sortBy": [
-                {"fieldName": "datesort", "order": "desc"},
-                {"fieldName": "relevance", "order": "desc"},
-            ],
-        }
-        bodies = [primary]
-        if captured and captured.get("documentClassification") != "preprint":
-            b = dict(captured)
-            rs = dict(b.get("resultSet") or {})
-            rs["offset"] = offset
-            rs["itemCount"] = int(rs.get("itemCount") or limit)
-            b["resultSet"] = rs
-            if b != primary:
-                bodies.append(b)
+        try_limits = (1000, 500, 200, 100) if not sized else (limit,)
         url = base + "/gateway/documents/search"
         try:
-            for b in bodies:
-                txt = _js_search_fetch(pg, url, b)
-                nadd, total = pull("api", txt)
-                cap = min(int(total or cap), 2000)
-                log("[page-api]", offset, "new", nadd, "have", len(recs), "/", total)
-                if nadd:
-                    api_ok = True
+            for lim in try_limits:
+                primary = {
+                    "query": query,
+                    "documentClassification": "primary",
+                    "resultSet": {"offset": offset, "itemCount": lim},
+                    "sortBy": [
+                        {"fieldName": "datesort", "order": "desc"},
+                        {"fieldName": "relevance", "order": "desc"},
+                    ],
+                }
+                bodies = [primary]
+                if captured and captured.get("documentClassification") != "preprint":
+                    b = dict(captured)
+                    rs = dict(b.get("resultSet") or {})
+                    rs["offset"] = offset
+                    rs["itemCount"] = lim
+                    b["resultSet"] = rs
+                    if b != primary:
+                        bodies.append(b)
+                got = False
+                for b in bodies:
+                    before = len(recs)
+                    txt = _js_search_fetch(pg, url, b)
+                    nadd, total = pull("api", txt)
+                    cap = min(page_cap(total or cap), API_WINDOW)
+                    more_n = len(recs) - before
+                    more_page, _ = parse_docs(txt or "")
+                    page_n = len(more_page) or more_n
+                    if more_n:
+                        if not sized:
+                            limit = max(page_n, 10)
+                            sized = True
+                        api_ok = True
+                        got = True
+                        nadd = more_n
+                        step = max(page_n, 1)
+                        break
+                if got:
                     break
+            if nadd:
+                if len(recs) % 200 < max(nadd, 1) or nadd >= 50:
+                    log("[page-api]", offset, "lim", limit, "new", nadd,
+                        "have", len(recs), "/", total)
+                if on_page:
+                    on_page(recs[-nadd:])
+                offset += max(step, nadd)
+                continue
         except Exception as e:
             log("[page-api-err]", offset, str(e)[:80])
             nadd = 0
-        if nadd:
-            offset = len(recs)
-            time.sleep(0.35)
-            continue
         log("[page-api-miss]" if not api_ok else "[page-api-end]",
             "offset", offset, "have", len(recs), "/", total)
         break
@@ -1154,9 +1413,11 @@ def fetch_rest(pg, box, query, recs, total):
             time.sleep(1.1)
             more, tot, nadd = _ingest_docs(box.get("docs") or "", recs, have)
             if tot:
-                total, cap = tot, min(int(tot), 2000)
+                total, cap = tot, page_cap(tot)
             if nadd:
                 log("[page-ui]", "new", nadd, "have", len(recs), "/", total)
+                if on_page:
+                    on_page(recs[-nadd:])
                 got = True
                 break
         if not got:
@@ -1213,49 +1474,138 @@ def harvest(pg, day, box):
         last_st = results_ready(pg)
         snap(pg, "scopus_results")
         log("[q-st]", last_st or "-", q)
-        if last_st == "ok" or box.get("docs"):
+        recs_q, tot_q = parse_docs(box.get("docs") or "")
+        if recs_q or last_st == "ok":
             used_q = q
             break
         if last_st == "zero":
             log("[zero-try-next-syntax]", q)
     recs, total = parse_docs(box.get("docs") or "")
     log("[parsed-hook]", "n", len(recs), "total", total, "st", last_st, "q", used_q or queries[-1])
-    if recs and total and len(recs) < min(int(total), 2000):
-        recs, total = fetch_rest(pg, box, used_q or queries[0], recs, total)
-        log("[paged]", "n", len(recs), "total", total)
-    if last_st == "ok" and not recs:
-        recs = export_csv(pg, box)
-        total = total or len(recs)
-        log("[parsed-export]", "n", len(recs))
-    if last_st != "ok" and not recs:
-        recs = scrape_table(pg)
-        total = total or len(recs)
-        log("[parsed-table]", "n", len(recs))
-    if last_st == "zero" and not recs:
-        recs, total = [], 0
     out_path = os.path.join(OUT_DIR, "scopus_%s.jsonl" % day[:7])
     have = set()
+    n_day_before = 0
     if os.path.exists(out_path):
         for line in open(out_path, encoding="utf-8"):
             try:
                 v = json.loads(line)
                 have.add(v.get("eid") or v.get("doi") or "")
+                if v.get("load_date") == day:
+                    n_day_before += 1
             except Exception:
                 pass
-    added = 0
-    with open(out_path, "a", encoding="utf-8") as f:
-        for rec in recs:
-            k = rec.get("eid") or rec.get("doi") or rec.get("title") or ""
-            if not k or k in have:
+
+    added_box = [0]
+
+    def _append(chunk):
+        added_n = 0
+        with open(out_path, "a", encoding="utf-8") as f:
+            for rec in chunk:
+                k = rec.get("eid") or rec.get("doi") or rec.get("title") or ""
+                if not k or k in have:
+                    continue
+                have.add(k)
+                rec["load_date"] = day
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                added_n += 1
+        added_box[0] += added_n
+        return added_n
+
+    def _run_query(q, recs0, tot0):
+        _append(recs0)
+        got = list(recs0)
+        if recs0 and tot0 and len(recs0) < min(page_cap(tot0), API_WINDOW):
+            got, tot0 = fetch_rest(pg, box, q, got, tot0, on_page=_append)
+            log("[paged]", q[:80], "n", len(got), "total", tot0)
+        return got, tot0
+
+    recs, total = _run_query(used_q or queries[0], recs, total)
+    if total and int(total) > API_WINDOW:
+        base_q = used_q or queries[0]
+        known_src = set()
+        harvested_src = set()
+        for name, _cnt in fetch_source_facets(pg, base_q) or []:
+            if name:
+                known_src.add(name)
+        stall = 0
+        for rnd in range(60):
+            have_day = n_day_before + added_box[0]
+            if have_day >= int(total) - 5:
+                log("[peel-done]", have_day, "/", total, "round", rnd)
+                break
+            pending = [s for s in known_src if s and s not in harvested_src]
+            if pending:
+                log("[peel]", "round", rnd, "pending", len(pending), "have", have_day, "/", total)
+                for s in pending:
+                    sq = source_query(base_q, s)
+                    srecs, stot = api_first(pg, sq)
+                    log("[j-hit]", stot, "n", len(srecs), s[:60])
+                    if srecs:
+                        _run_query(sq, srecs, stot)
+                        for rec in srecs:
+                            if rec.get("source"):
+                                known_src.add(rec["source"])
+                    harvested_src.add(s)
+                stall = 0
                 continue
-            have.add(k)
-            rec["load_date"] = day
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            added += 1
-    st = {"last_done": day, "last_total": total, "last_new": added, "n_parsed": len(recs),
-          "ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+            q_rem, n_not = remainder_query(base_q, harvested_src)
+            more_j = fetch_source_facets(pg, q_rem)
+            added_names = 0
+            for name, _cnt in more_j or []:
+                if name and name not in known_src:
+                    known_src.add(name)
+                    added_names += 1
+            log("[remain-facet]", "not", n_not, "new-j", added_names, "have", have_day, "/", total)
+            if added_names:
+                stall = 0
+                continue
+            rrecs, rtot = api_first(pg, q_rem)
+            log("[remain-page]", rtot, "n", len(rrecs))
+            if rrecs:
+                before = added_box[0]
+                _run_query(q_rem, rrecs, rtot)
+                for rec in rrecs:
+                    if rec.get("source"):
+                        known_src.add(rec["source"])
+                if added_box[0] > before:
+                    stall = 0
+                    continue
+            stall += 1
+            if stall >= 3:
+                log("[peel-stop]", "no more journals", have_day, "/", total)
+                break
+    if last_st == "ok" and not recs:
+        recs = export_csv(pg, box)
+        total = total or len(recs)
+        log("[parsed-export]", "n", len(recs))
+        _append(recs)
+    if last_st != "ok" and not recs:
+        recs = scrape_table(pg)
+        total = total or len(recs)
+        log("[parsed-table]", "n", len(recs))
+        _append(recs)
+    if last_st == "zero" and not recs:
+        recs, total = [], 0
+    added = added_box[0]
+    have_day = n_day_before + added
+    complete = bool(added or recs) and bool(total) and have_day >= int(total) - 5
+    prev = {}
+    if os.path.exists(STATE):
+        try:
+            prev = json.load(open(STATE, encoding="utf-8"))
+        except Exception:
+            prev = {}
+    st = {
+        "last_done": day if complete else (prev.get("last_done") or ""),
+        "last_total": total,
+        "last_new": added,
+        "n_parsed": len(recs),
+        "complete": complete,
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
     json.dump(st, open(STATE, "w"), ensure_ascii=False, indent=1)
-    log("[WINDOW_DONE]", day, "new", added, "parsed", len(recs), "total", total)
+    log("[WINDOW_DONE]", day, "new", added, "day_have", have_day, "parsed", len(recs),
+        "total", total, "complete", complete)
     if recs or added:
         return 0
     if last_st == "zero":
@@ -1283,10 +1633,10 @@ def run_day(day, headed=True):
         except Exception as e:
             log("[init-script]", str(e)[:80])
         pg.on("dialog", lambda d: d.accept())
-        if ck and vip:
+        if ck:
             inject_cookie_list(pg.context, ck)
-        elif ck:
-            log("[skip-stale-cookies] vip-check false, stay on login form")
+            if not vip:
+                log("[inject-anyway] vip-check failed, still reuse cookie (no extra login)")
         try:
             pg.goto(SITE + "e/member/cp/", wait_until="domcontentloaded", timeout=60000)
         except Exception as e:
@@ -1300,11 +1650,13 @@ def run_day(day, headed=True):
             logged = is_logged(pg)
         log("[cp]", (surl(pg) or "")[:90], "logged" if logged else "need-login")
         if not logged:
-            if not headed:
+            if ck:
+                log("[cp-skip-login] cookie present, skip captcha, open Scopus entry")
+            elif not headed:
                 log("NO_SESSION")
                 return 2
-            if not wait_login(pg):
-                log("FAIL_LOGIN")
+            elif not wait_login(pg):
+                problem("FAIL_LOGIN")
                 return 2
         only_one_tab(pg.context, pg)
         attach(pg, box)
@@ -1336,7 +1688,7 @@ def run_day(day, headed=True):
             else:
                 continue
             continue
-        log("FAIL_LAND")
+        problem("FAIL_LAND")
         return last_rc
 
 
@@ -1356,5 +1708,5 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception:
         traceback.print_exc()
-        log("FAILED exception")
+        problem("EXCEPTION")
         sys.exit(3)
