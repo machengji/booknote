@@ -329,16 +329,22 @@ def letter_shards(q):
 
 def extra_shards(q):
     """Catch titles that are not English two-letter prefixes (digits, CJK, symbols)."""
-    az = [chr(c) for c in range(ord("a"), ord("z") + 1)]
-    digits = " OR ".join("%d%d*" % (i, j) for i in range(10) for j in range(10))
+    digits = _digit_group()
     out = ["%s AND TITLE(%s)" % (q, digits)]
-    nots = []
-    for a in az:
-        ors = " OR ".join("%s%s*" % (a, b) for b in az)
-        nots.append("NOT TITLE(%s)" % ors)
+    nots = ["NOT TITLE(%s)" % _title_group(a) for a in AZ]
     nots.append("NOT TITLE(%s)" % digits)
     out.append("%s AND %s" % (q, " AND ".join(nots)))
     return out
+
+
+def harvest_gap(pg, q, run_query):
+    """Pick up leftover hits after a near-complete day (digits / non-Latin titles)."""
+    log("[gap-fill]", q[:120])
+    for i, sq in enumerate(extra_shards(q)):
+        recs, tot = api_first(pg, sq)
+        log("[gap-shard]", i, tot if tot is not None else "-", "n", len(recs or []), sq[:90])
+        if recs or tot:
+            run_query(sq, recs, tot or 0)
 
 
 def doctype_shards(q):
@@ -463,18 +469,29 @@ def _digit_group():
 
 
 def parts_useful(parts, parent_tot):
-    """A split helps only if it shrinks the largest bucket below the 5000 window parent."""
+    """Keep splits that are not a clone of the parent and that peel off at least one pageable bucket.
+
+    TITLE(aa*) matches any title *word*, so letter shards overlap and the largest
+    bucket can exceed the parent; those are rejected here.
+    """
     if not parts:
         return False
     parent_tot = int(parent_tot or 0)
     tots = [int(p[2] or 0) for p in parts]
     mx = max(tots) if tots else 0
     sm = sum(tots)
-    if mx >= parent_tot - 5:
-        return False
     if sm < 10 and parent_tot > 100:
         return False
-    return True
+    if mx >= parent_tot - 5:
+        return False
+    n_fit = sum(1 for t in tots if t <= API_WINDOW)
+    if n_fit >= 1 and len(parts) >= 2:
+        return True
+    if mx <= API_WINDOW:
+        return True
+    if len(parts) >= 2 and (parent_tot - mx) >= max(200, int(parent_tot * 0.08)):
+        return True
+    return False
 
 
 def split_doctype(pg, q, tot):
@@ -490,7 +507,7 @@ def split_doctype(pg, q, tot):
             log("[split-doctype-all]", t, n)
             return []
         parts.append((sq, recs, int(n), "D:"+t))
-    if tot - sum(p[2] for p in parts) > 30:
+    if tot - sum(p[2] for p in parts) > 5:
         sq = "%s AND NOT DOCTYPE(%s)" % (q, " OR ".join(DOCTYPES))
         recs, n = api_first(pg, sq)
         log("[split-probe]", "D:rest", n if n is not None else "-")
@@ -499,13 +516,17 @@ def split_doctype(pg, q, tot):
     return parts
 
 
+def pubyear_clause(y):
+    return "PUBYEAR = %d" % int(y)
+
+
 def split_pubyear(pg, q, tot):
     tot = int(tot or 0)
     y0 = datetime.date.today().year + 1
     years = list(range(y0, y0 - 12, -1))
     parts = []
     for y in years:
-        sq = "%s AND PUBYEAR(%d)" % (q, y)
+        sq = "%s AND %s" % (q, pubyear_clause(y))
         recs, n = api_first(pg, sq)
         log("[split-probe]", "Y:%d" % y, n if n is not None else "-")
         if not n:
@@ -514,12 +535,53 @@ def split_pubyear(pg, q, tot):
             log("[split-year-all]", y, n)
             return []
         parts.append((sq, recs, int(n), "Y:%d" % y))
-    if tot - sum(p[2] for p in parts) > 30:
-        sq = "%s AND NOT PUBYEAR(%s)" % (q, " OR ".join(str(y) for y in years))
+    if tot - sum(p[2] for p in parts) > 5:
+        sq = "%s AND %s" % (q, " AND ".join("NOT %s" % pubyear_clause(y) for y in years))
         recs, n = api_first(pg, sq)
         log("[split-probe]", "Y:rest", n if n is not None else "-")
         if n:
             parts.append((sq, recs, int(n), "Y:rest"))
+    return parts
+
+
+def split_language(pg, q, tot):
+    tot = int(tot or 0)
+    langs = ["english", "chinese", "japanese", "german", "french",
+             "spanish", "russian", "portuguese", "korean", "italian"]
+    parts = []
+    for lang in langs:
+        sq = "%s AND LANGUAGE(%s)" % (q, lang)
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "L:"+lang[:2], n if n is not None else "-")
+        if not n:
+            continue
+        if n >= tot - 5:
+            log("[split-lang-all]", lang, n)
+            return []
+        parts.append((sq, recs, int(n), "lang-"+lang[:2]))
+    if tot - sum(p[2] for p in parts) > 5:
+        sq = "%s AND NOT LANGUAGE(%s)" % (q, " OR ".join(langs))
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "L:rest", n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "lang-rest"))
+    return parts
+
+
+def split_srctype(pg, q, tot):
+    tot = int(tot or 0)
+    types = ["j", "p", "b", "k", "d"]
+    parts = []
+    for t in types:
+        sq = "%s AND SRCTYPE(%s)" % (q, t)
+        recs, n = api_first(pg, sq)
+        log("[split-probe]", "S:"+t, n if n is not None else "-")
+        if not n:
+            continue
+        if n >= tot - 5:
+            log("[split-src-all]", t, n)
+            return []
+        parts.append((sq, recs, int(n), "S:"+t))
     return parts
 
 
@@ -538,7 +600,7 @@ def split_letters(pg, q, tot):
     if n:
         parts.append((sq, recs, int(n), "let-09"))
     got = sum(p[2] for p in parts)
-    if tot - got > 30:
+    if tot - got > 5:
         nots = ["NOT TITLE(%s)" % _title_group(a) for a in AZ]
         nots.append("NOT TITLE(%s)" % _digit_group())
         sq = "%s AND %s" % (q, " AND ".join(nots))
@@ -576,30 +638,88 @@ def split_journals(pg, q, tot):
             continue
         sm += n
         parts.append((source_query(q, name), [], n, "j"))
-    if names and int(tot or 0) - sm > 30:
+    if names and int(tot or 0) - sm > 5:
         q_rem, n_not = remainder_query(q, names)
         parts.append((q_rem, [], max(int(tot or 0) - sm, 0), "jrem"))
         log("[split-jrem]", "not", n_not, "sum-j", sm, "parent", tot)
     return parts
 
 
+DISJOINT = [
+    ("doctype", split_doctype),
+    ("pubyear", split_pubyear),
+    ("language", split_language),
+    ("srctype", split_srctype),
+    ("journals", split_journals),
+]
+
+
 def splitters_for(kind):
+    kind = kind or "root"
+    skip = set()
+    if kind.startswith("D:"):
+        skip.add("doctype")
+    if kind.startswith("Y:"):
+        skip.update(("doctype", "pubyear"))
+    if kind.startswith("lang-"):
+        skip.update(("doctype", "language"))
+    if kind.startswith("S:"):
+        skip.update(("doctype", "srctype"))
+    if skip:
+        return [x for x in DISJOINT if x[0] not in skip] + [("letters", split_letters)]
+    if kind == "j":
+        return [("pubyear", split_pubyear), ("language", split_language), ("letters", split_letters)]
+    if kind == "jrem":
+        return [("journals", split_journals), ("pubyear", split_pubyear),
+                ("language", split_language), ("letters", split_letters)]
     if isinstance(kind, str) and kind.startswith("let-") and len(kind) == 5:
         letter = kind[-1]
         if letter in AZ:
             L = letter
             return [
-                ("bigram-" + L, lambda pg, q, t: split_bigrams(pg, q, t, L)),
                 ("journals", split_journals),
+                ("bigram-" + L, lambda pg, q, t: split_bigrams(pg, q, t, L)),
             ]
     if isinstance(kind, str) and kind.startswith("bi-"):
         return [("journals", split_journals), ("pubyear", split_pubyear)]
-    return [
-        ("doctype", split_doctype),
-        ("letters", split_letters),
-        ("pubyear", split_pubyear),
-        ("journals", split_journals),
-    ]
+    return DISJOINT + [("letters", split_letters)]
+
+
+def cover_journals(pg, box, q, tot, run_query, depth=0):
+    """Peel today's journals in batches. Never page a remainder that is still >5000."""
+    seen = []
+    seen_set = set()
+    tot = int(tot or 0)
+    for rnd in range(60):
+        q_facet = q
+        if seen:
+            q_facet, n_not = remainder_query(q, seen)
+            log("[cover-facet]", "rnd", rnd, "not", n_not, "seen", len(seen), q_facet[:80])
+        journals = fetch_source_facets(pg, q_facet) or []
+        new = [(n, c) for n, c in journals if n and n not in seen_set]
+        if not new:
+            q_rem, n_not = remainder_query(q, seen)
+            recs, rtot = api_first(pg, q_rem)
+            rtot = int(rtot or 0)
+            log("[cover-remain]", rtot, "n", len(recs or []), "seen-j", len(seen), "not", n_not)
+            if rtot <= 0:
+                return
+            if rtot <= API_WINDOW:
+                run_query(q_rem, recs, rtot)
+            else:
+                harvest_over_window(pg, box, q_rem, recs, rtot, run_query, depth=depth + 1, kind="jrem")
+            return
+        for name, cnt in new:
+            seen.append(name)
+            seen_set.add(name)
+            n = int(cnt or 0)
+            log("[cover-j]", n, name[:70])
+            if n <= API_WINDOW:
+                harvest_over_window(pg, box, source_query(q, name), [], n, run_query,
+                                    depth=depth + 1, kind="j")
+            else:
+                harvest_over_window(pg, box, source_query(q, name), [], n, run_query,
+                                    depth=depth + 1, kind="j")
 
 
 def harvest_over_window(pg, box, q, recs0, total, run_query, depth=0, kind="root"):
@@ -612,9 +732,9 @@ def harvest_over_window(pg, box, q, recs0, total, run_query, depth=0, kind="root
     if tot <= API_WINDOW:
         run_query(q, recs0 or [], tot)
         return
-    if depth >= 8:
+    if depth >= 10:
         log("[split-depth]", tot, q[:100])
-        run_query(q, recs0 or [], tot)
+        cover_journals(pg, box, q, tot, run_query, depth=depth)
         return
     log("[split]", "depth", depth, "tot", tot, "kind", kind, q[:140])
     used = None
@@ -632,8 +752,8 @@ def harvest_over_window(pg, box, q, recs0, total, run_query, depth=0, kind="root
         log("[split-skip]", name, "n", len(cand),
             "max", max((p[2] for p in cand), default=0))
     if not parts:
-        log("[split-giveup]", tot, q[:100])
-        run_query(q, recs0 or [], tot)
+        log("[split-cover]", tot, q[:100])
+        cover_journals(pg, box, q, tot, run_query, depth=depth)
         return
     log("[split-ok]", used, "n", len(parts),
         "max", max(p[2] for p in parts), "sum", sum(p[2] for p in parts),
@@ -1722,8 +1842,22 @@ def harvest(pg, day, box):
 
     used_q = used_q or queries[0]
     _append(recs)
-    if total and int(total) > API_WINDOW:
-        harvest_over_window(pg, box, used_q, recs, total, _run_query)
+    tot = int(total or 0)
+    have_now = n_day_before + added_box[0]
+    gap = (tot - have_now) if tot else 0
+    if tot > API_WINDOW:
+        if 0 < gap <= 250 and have_now >= int(tot * 0.9):
+            log("[gap-fast]", "have", have_now, "tot", tot, "gap", gap)
+            harvest_gap(pg, used_q, _run_query)
+        else:
+            harvest_over_window(pg, box, used_q, recs, tot, _run_query)
+        have_now = n_day_before + added_box[0]
+        if tot and have_now < tot - 5:
+            log("[gap-after]", have_now, "/", tot)
+            cover_journals(pg, box, used_q, tot, _run_query)
+            have_now = n_day_before + added_box[0]
+            if have_now < tot - 5:
+                harvest_gap(pg, used_q, _run_query)
     else:
         recs, total = _run_query(used_q, recs, total)
     if last_st == "ok" and not recs:

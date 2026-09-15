@@ -26,15 +26,24 @@ def test_parts_useful():
     assert not sc.parts_useful([], 100)
     assert not sc.parts_useful([("q", [], 3, "x")], 50000)
     assert not sc.parts_useful([("q", [], 4995, "a")], 5000)
+    assert not sc.parts_useful([("q", [], 5168, "D:ar")], 5181)
+    jparts = [("q", [], 7712, "j")] + [("q", [], 30, "j") for _ in range(7)]
+    assert sc.parts_useful(jparts, 7961)
 
 
 def test_splitters_for():
     names = [n for n, _ in sc.splitters_for("root")]
-    assert names[0] == "doctype" and "letters" in names
+    assert names[0] == "doctype"
+    assert names.index("journals") < names.index("letters")
+    assert "pubyear" in names
+    names = [n for n, _ in sc.splitters_for("D:ar")]
+    assert "doctype" not in names
     names = [n for n, _ in sc.splitters_for("let-t")]
-    assert names[0].startswith("bigram-t")
-    names = [n for n, _ in sc.splitters_for("bi-th")]
-    assert "journals" in names
+    assert names[0] == "journals"
+
+
+def test_pubyear_syntax():
+    assert sc.pubyear_clause(2026) == "PUBYEAR = 2026"
 
 
 def test_source_and_remainder():
@@ -50,5 +59,6 @@ if __name__ == "__main__":
     test_title_group()
     test_parts_useful()
     test_splitters_for()
+    test_pubyear_syntax()
     test_source_and_remainder()
     print("ok")
