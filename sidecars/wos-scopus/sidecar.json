@@ -1,0 +1,10 @@
+{
+  "builtin": "schedule",
+  "args": [
+    "0 * * * *",
+    "agentapi",
+    "new-conversation",
+    "执行每小时整点巡检 WoS/Scopus 采集进度并自主修复：\n1. 运行巡检脚本：python \"harvest/antigravity_patrol.py\"；\n2. 核查 Scopus 详情线与 WoS 采集进程：进程若丢失则自动拉起；Scopus 若遇 401 则重启刷新会话；\n3. 其余无关采集线保持暂停；\n4. 若 WoS 目标批次采齐，自动触发 RDS 增量入库；\n5. 输出<=8行双线综合简报，巡检记录自动持久化落盘至 patrol_report.md。"
+  ],
+  "display_name": "每小时巡检 WoS/Scopus 采集并自主修复"
+}

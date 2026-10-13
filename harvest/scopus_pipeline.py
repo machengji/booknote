@@ -15,6 +15,11 @@ from wos_pipeline import (
     surl, scontent, snap, SESSION_FILE, USER, PWD, save_pw_cookies,
 )
 
+try:
+    import issn_buckets
+except Exception:
+    issn_buckets = None
+
 
 def log(*a):
     print(" ".join(str(x) for x in a), flush=True)
@@ -233,10 +238,16 @@ STATE = os.path.join(OUT_DIR, "scopus_state.json")
 os.makedirs(RAW, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# 入口列表来自 https://www.scidownload.com/e/action/ListInfo/?classid=225
+# 2026-09-23 22:43 实测该页三个入口：mlkd(5460) / Kr1(5841) / hfu(6016)。
+# 09-18 时是 mlkd(5460) / No1(6065) / No2(6086)，其中 No1 的 sjk.x.scihub.top/nosj
+# 一直 404 nginx、No2 停在未登录首页；09-23 这两条已从列表页消失，
+# 换成 Kr1 和 hfu。写死的旧 ID 导致 18:05 与 21:05 两轮全部 FAIL_LAND（rc 3）。
+# 入口会变，死入口由 scopus_le1000 的入口健康表自动搁置。
 ENTRIES = [
-    (5841, "Scopus(Kr1)"),
     (5460, "Scopus(mlkd)"),
-    (6112, "Scopus(NCU)"),
+    (5841, "Scopus(Kr1)"),
+    (6016, "Scopus(hfu)"),
 ]
 
 
@@ -273,9 +284,43 @@ SCOPUS_GAP_JITTER = _env_float("BOOKNOTE_SCOPUS_GAP_JITTER", 1.8)
 SCOPUS_BURST_EVERY = _env_int("BOOKNOTE_SCOPUS_BURST_EVERY", 18)
 SCOPUS_BURST_PAUSE = _env_float("BOOKNOTE_SCOPUS_BURST_PAUSE", 16.0)
 SCOPUS_DAY_GAP = _env_float("BOOKNOTE_SCOPUS_DAY_GAP", 25.0)
+# 详情单独一档节奏。详情是 GET doc-details，一条文献一个请求，全量三十多万条；
+# 列表那边是切分探针。两者对网关的压力不是一回事，所以给详情一个独立旋钮，
+# 调详情时不会把列表一起带快。默认 -1 = 跟随上面那个全局 gap。
+# 09-28 实测：gap 3.5 时单次调用实际间隔约 5.5 秒，而当天 12:07 那轮已出现 7 次
+# 429 + 9 次 backoff —— 当前档位就在网关限流边缘，往下压要一格一格试。
+SCOPUS_DETAIL_GAP = _env_float("BOOKNOTE_SCOPUS_DETAIL_GAP", -1.0)
+SCOPUS_DETAIL_GAP_JITTER = _env_float("BOOKNOTE_SCOPUS_DETAIL_GAP_JITTER", -1.0)
 _last_api = [0.0]
 _api_n = [0]
 _backoff = [0.0]
+# 非 200 响应计数：调用方据此区分「这一天真的没数据」和「会话/配额坏了」。
+_bad = [0]
+_bad_kind = [""]
+# 只统计我们自己主动发起的检索请求。attach() 的被动网络钩子会把后台请求
+# 也记进 _bad，用它做「本次查询是否失败」的判据会误报（实测把 09-03 误判成
+# http 错而中断当天采集）。
+_bad_fetch = [0]
+# 400 BAD_REQUEST 单独统计：那是「这条查询语句不合法」，不是会话坏了。
+# 混在一起会把一个写错的切分探针升级成「当天中断」。
+_bad_query = [0]
+_bad_query_kind = [""]
+
+
+def bad_count():
+    return _bad_fetch[0]
+
+
+def bad_query_count():
+    return _bad_query[0]
+
+
+def bad_query_kind():
+    return _bad_query_kind[0]
+
+
+def bad_kind():
+    return _bad_kind[0]
 
 
 def note_http_status(st, body=""):
@@ -283,6 +328,9 @@ def note_http_status(st, body=""):
         st = int(st)
     except Exception:
         return
+    if st != 200:
+        _bad[0] += 1
+        _bad_kind[0] = "%s %s" % (st, (body or "")[:60].replace("\n", " "))
     blob = (body or "")[:400].lower()
     limited = st in (429, 418, 503) or bool(
         re.search(r"too many requests|rate.?limit|unusual traffic|captcha", blob)
@@ -300,7 +348,13 @@ def note_http_status(st, body=""):
 
 def pace(kind="api"):
     """Sleep until the next search/facet call is allowed."""
-    wait = SCOPUS_GAP + random.random() * SCOPUS_GAP_JITTER + (_backoff[0] or 0.0)
+    gap, jit = SCOPUS_GAP, SCOPUS_GAP_JITTER
+    if kind == "detail":
+        if SCOPUS_DETAIL_GAP >= 0:
+            gap = SCOPUS_DETAIL_GAP
+        if SCOPUS_DETAIL_GAP_JITTER >= 0:
+            jit = SCOPUS_DETAIL_GAP_JITTER
+    wait = gap + random.random() * jit + (_backoff[0] or 0.0)
     elapsed = time.time() - _last_api[0]
     sl = wait - elapsed if _last_api[0] else min(wait, 0.8)
     if sl > 0.05:
@@ -356,64 +410,115 @@ def doctype_shards(q):
 
 def parse_srctitle_facets(txt):
     out = []
+
+    def add(name, cnt):
+        if not name:
+            return
+        try:
+            out.append((str(name), int(cnt)))
+        except Exception:
+            pass
+
     try:
         j = json.loads(txt or "")
     except Exception:
         return out
-    ff = j.get("facetFields") or {}
-    rows = ff.get("srctitle") or ff.get("sourceTitle") or []
-    for row in rows:
+    ff = j.get("facetFields") or j.get("facets") or {}
+    rows = (ff.get("srctitle") if isinstance(ff, dict) else None) or []
+    if isinstance(ff, dict):
+        rows = rows or ff.get("sourceTitle") or ff.get("exactSourceTitle") or ff.get("exactsrctitle") or []
+        if isinstance(rows, dict):
+            rows = rows.get("buckets") or rows.get("values") or rows.get("items") or []
+    if not rows and isinstance(j.get("requestedFacets"), list):
+        for block in j["requestedFacets"]:
+            if isinstance(block, dict) and (block.get("field") or "") in ("srctitle", "sourceTitle"):
+                rows = block.get("values") or block.get("buckets") or []
+    for row in rows or []:
         if isinstance(row, dict):
-            for k, v in row.items():
-                try:
-                    out.append((str(k), int(v)))
-                except Exception:
-                    pass
-    out.sort(key=lambda x: -x[1])
+            if "value" in row or "name" in row or "key" in row:
+                add(row.get("value") or row.get("name") or row.get("key"),
+                    row.get("count") or row.get("docCount") or row.get("n"))
+            else:
+                for k, v in row.items():
+                    add(k, v)
+    seen = {}
+    for name, cnt in out:
+        seen[name] = max(cnt, seen.get(name, 0))
+    out = sorted(seen.items(), key=lambda x: -x[1])
     return out
 
 
-def fetch_source_facets(pg, query):
-    """Today's journals only (not the whole 40k list)."""
+def _facet_post(pg, base, body):
+    pace("facet")
+    try:
+        r = pg.evaluate("""async (arg) => {
+            const rr = await fetch(arg.base + '/gateway/document-facet-api/facets', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json','Accept':'application/json'},
+                credentials: 'include',
+                body: JSON.stringify(arg.body)
+            });
+            const t = await rr.text();
+            return {st: rr.status, t: t};
+        }""", {"base": base, "body": body})
+    except Exception as e:
+        log("[facet-err]", str(e)[:80])
+        return "", []
+    st = (r or {}).get("st") if isinstance(r, dict) else None
+    txt = (r or {}).get("t") if isinstance(r, dict) else (r or "")
+    note_http_status(st, txt)
+    journals = parse_srctitle_facets(txt or "")
+    return txt or "", journals
+
+
+def fetch_source_facets(pg, query, want=200):
+    """Today's journals. The UI defaults to 7 buckets; ask for more and page offset."""
     base = (gateway_base(surl(pg)) or "").rstrip("/")
     bodies = [
         {"query": query, "documentClassification": "primary",
-         "requestedFacets": [{"field": "srctitle", "count": 5000}]},
-        {"query": query, "documentClassification": "primary", "facetFields": ["srctitle"],
-         "facetLimit": 5000, "max": 5000, "size": 5000, "count": 5000},
-        {"query": query, "documentType": "s", "facetFields": ["srctitle"], "count": 5000},
+         "requestedFacets": [{"field": "srctitle", "count": want}]},
+        {"query": query, "documentClassification": "primary",
+         "requestedFacets": [{"field": "srctitle", "count": want, "offset": 0}]},
+        {"query": query, "documentClassification": "primary",
+         "facets": [{"field": "srctitle", "count": want, "sort": "count"}]},
+        {"query": query, "documentClassification": "primary",
+         "facetFields": ["srctitle"], "facetLimit": want, "facetCount": want, "count": want},
+        {"query": query, "documentClassification": "primary",
+         "requestedFacets": [{"field": "exactSourceTitle", "count": want}]},
     ]
-    last = ""
-    for b in bodies:
-        pace("facet")
-        try:
-            r = pg.evaluate("""async (arg) => {
-                const rr = await fetch(arg.base + '/gateway/document-facet-api/facets', {
-                    method: 'POST',
-                    headers: {'Content-Type':'application/json','Accept':'application/json'},
-                    credentials: 'include',
-                    body: JSON.stringify(arg.body)
-                });
-                const t = await rr.text();
-                return {st: rr.status, t: t};
-            }""", {"base": base, "body": b})
-        except Exception as e:
-            log("[facet-err]", str(e)[:80])
-            continue
-        st = (r or {}).get("st") if isinstance(r, dict) else None
-        txt = (r or {}).get("t") if isinstance(r, dict) else (r or "")
-        last = txt or last
-        note_http_status(st, txt)
-        journals = parse_srctitle_facets(txt or "")
-        if journals:
-            log("[journals]", "n", len(journals), "top",
-                json.dumps(journals[:8], ensure_ascii=False)[:400],
-                "sum", sum(c for _, c in journals))
-            return journals
-    journals = parse_srctitle_facets(last or "")
-    log("[journals]", "n", len(journals), "top", json.dumps(journals[:8], ensure_ascii=False)[:400],
-        "sum", sum(c for _, c in journals))
-    return journals
+    best, best_txt = [], ""
+    for i, b in enumerate(bodies):
+        txt, journals = _facet_post(pg, base, b)
+        log("[facet-try]", i, "n", len(journals), "sum", sum(c for _, c in journals))
+        if len(journals) > len(best):
+            best, best_txt = journals, txt
+        if len(best) >= 40:
+            break
+    if 0 < len(best) < 40:
+        have = {n for n, _ in best}
+        step = max(len(best), 7)
+        for off in range(step, 400, step):
+            b = {"query": query, "documentClassification": "primary",
+                 "requestedFacets": [{"field": "srctitle", "count": step, "offset": off}]}
+            txt, journals = _facet_post(pg, base, b)
+            new = [(n, c) for n, c in journals if n not in have]
+            log("[facet-off]", off, "n", len(journals), "new", len(new))
+            if not new:
+                b2 = {"query": query, "documentClassification": "primary",
+                      "requestedFacets": [{"field": "srctitle", "count": want, "from": off}]}
+                txt, journals = _facet_post(pg, base, b2)
+                new = [(n, c) for n, c in journals if n not in have]
+                log("[facet-from]", off, "n", len(journals), "new", len(new))
+            if not new:
+                break
+            best.extend(new)
+            have.update(n for n, _ in new)
+            best_txt = txt
+    if len(best) < 20 and best_txt:
+        log("[facet-raw]", re.sub(r"\s+", " ", best_txt)[:400])
+    log("[journals]", "n", len(best), "top", json.dumps(best[:8], ensure_ascii=False)[:400],
+        "sum", sum(c for _, c in best))
+    return best
 
 
 def source_query(base_q, name):
@@ -421,8 +526,12 @@ def source_query(base_q, name):
     return '%s AND EXACTSRCTITLE("%s")' % (base_q, esc)
 
 
-def remainder_query(base_q, names, max_chars=18000):
-    q = base_q
+def strip_src_nots(q):
+    return re.sub(r"\s+AND NOT EXACTSRCTITLE\(\"[^\"]*\"\)", "", q or "").strip()
+
+
+def remainder_query(base_q, names, max_chars=12000, strip=True):
+    q = strip_src_nots(base_q) if strip else (base_q or "")
     n = 0
     for s in names:
         if not s:
@@ -452,6 +561,11 @@ def api_first(pg, q, classification="primary", offset=0):
         txt = _js_search_fetch(pg, url, body)
     except Exception as e:
         log("[api-first-err]", str(e)[:80], q[:60])
+        # 网络层异常（Page.evaluate NetworkError）必须计入失败。否则调用方看到的是
+        # 「total=None 且没有错误」，会把「这次没拿到数据」当成「这天没数据」，
+        # 把格子标成 [empty]/完成 —— 又一条静默丢数路径（09-21 15:07 实测连抖 6 次）。
+        _bad_fetch[0] += 1
+        _bad_kind[0] = "fetch-ex " + str(e)[:60].replace("\n", " ")
         return [], None
     return parse_docs(txt or "")
 
@@ -645,12 +759,44 @@ def split_journals(pg, q, tot):
     return parts
 
 
+def split_issn_bucket(pg, q, tot):
+    """Partition by offline ISSN buckets from the official source list.
+
+    Deterministic, non-overlapping, no facet 7-cap, no TITLE overlap. Only for
+    journal-article subtrees (DOCTYPE(ar)); records without ISSN are not
+    covered, so totals are reconciled against the day count elsewhere.
+    """
+    if issn_buckets is None or "DOCTYPE(ar)" not in (q or ""):
+        return []
+    try:
+        groups = issn_buckets.load()
+    except Exception as e:
+        log("[issn-skip]", str(e)[:80])
+        return []
+    parts = []
+    for gi, grp in enumerate(groups):
+        sq = q + " AND ISSN(%s)" % " OR ".join(grp)
+        if len(sq) > 12000:
+            log("[issn-toolong]", gi, len(sq))
+            continue
+        recs, n = api_first(pg, sq)
+        log("[issn-probe]", gi, n if n is not None else "-")
+        if n:
+            parts.append((sq, recs, int(n), "I:%d" % gi))
+    tot = int(tot or 0)
+    s = sum(p[2] for p in parts)
+    log("[issn-sum]", s, "vs", tot, "miss", tot - s)
+    if tot and s < tot * 0.9:
+        problem("ISSN_COVER", s, "of", tot, "(issn-less records fall out of buckets)")
+    return parts
+
+
 DISJOINT = [
     ("doctype", split_doctype),
     ("pubyear", split_pubyear),
     ("language", split_language),
     ("srctype", split_srctype),
-    ("journals", split_journals),
+    ("issnb", split_issn_bucket),
 ]
 
 
@@ -665,61 +811,71 @@ def splitters_for(kind):
         skip.update(("doctype", "language"))
     if kind.startswith("S:"):
         skip.update(("doctype", "srctype"))
-    if skip:
-        return [x for x in DISJOINT if x[0] not in skip] + [("letters", split_letters)]
+    if kind.startswith("I:"):
+        skip.add("issnb")
     if kind == "j":
-        return [("pubyear", split_pubyear), ("language", split_language), ("letters", split_letters)]
-    if kind == "jrem":
-        return [("journals", split_journals), ("pubyear", split_pubyear),
-                ("language", split_language), ("letters", split_letters)]
-    if isinstance(kind, str) and kind.startswith("let-") and len(kind) == 5:
-        letter = kind[-1]
-        if letter in AZ:
-            L = letter
-            return [
-                ("journals", split_journals),
-                ("bigram-" + L, lambda pg, q, t: split_bigrams(pg, q, t, L)),
-            ]
-    if isinstance(kind, str) and kind.startswith("bi-"):
-        return [("journals", split_journals), ("pubyear", split_pubyear)]
-    return DISJOINT + [("letters", split_letters)]
+        return [("pubyear", split_pubyear)]
+    if skip:
+        return [x for x in DISJOINT if x[0] not in skip]
+    return list(DISJOINT)
+
+
+def sources_from_recs(recs):
+    """Unique source titles in a result page, largest first."""
+    bag = {}
+    for rec in recs or []:
+        name = (rec.get("source") or "").strip()
+        if not name:
+            continue
+        item = bag.setdefault(name, {"n": 0, "issn": rec.get("issn") or ""})
+        item["n"] += 1
+        if not item["issn"] and rec.get("issn"):
+            item["issn"] = rec.get("issn") or ""
+    return sorted(((k, v["n"], v["issn"]) for k, v in bag.items()), key=lambda x: -x[1])
 
 
 def cover_journals(pg, box, q, tot, run_query, depth=0):
-    """Peel today's journals in batches. Never page a remainder that is still >5000."""
-    seen = []
+    """The facet API only returns 7 source titles. Pull journal names from result pages instead."""
+    base = strip_src_nots(q)
+    q_cur = base
     seen_set = set()
     tot = int(tot or 0)
-    for rnd in range(60):
-        q_facet = q
-        if seen:
-            q_facet, n_not = remainder_query(q, seen)
-            log("[cover-facet]", "rnd", rnd, "not", n_not, "seen", len(seen), q_facet[:80])
-        journals = fetch_source_facets(pg, q_facet) or []
-        new = [(n, c) for n, c in journals if n and n not in seen_set]
-        if not new:
-            q_rem, n_not = remainder_query(q, seen)
-            recs, rtot = api_first(pg, q_rem)
-            rtot = int(rtot or 0)
-            log("[cover-remain]", rtot, "n", len(recs or []), "seen-j", len(seen), "not", n_not)
-            if rtot <= 0:
-                return
-            if rtot <= API_WINDOW:
-                run_query(q_rem, recs, rtot)
-            else:
-                harvest_over_window(pg, box, q_rem, recs, rtot, run_query, depth=depth + 1, kind="jrem")
+    for rnd in range(250):
+        recs, rtot = api_first(pg, q_cur)
+        rtot = int(rtot or 0)
+        srcs = sources_from_recs(recs)
+        new = [(n, c, issn) for n, c, issn in srcs if n not in seen_set]
+        log("[cover-page]", "rnd", rnd, "tot", rtot, "n", len(recs or []),
+            "src", len(srcs), "new", len(new), "seen", len(seen_set), "qlen", len(q_cur))
+        if rtot <= 0:
             return
-        for name, cnt in new:
-            seen.append(name)
+        if rtot <= API_WINDOW:
+            run_query(q_cur, recs, rtot)
+            return
+        run_query(q_cur, recs, len(recs or []))
+        if not srcs:
+            log("[cover-nosrc]", rtot)
+            return
+        for name, _cnt, issn in new:
             seen_set.add(name)
-            n = int(cnt or 0)
-            log("[cover-j]", n, name[:70])
-            if n <= API_WINDOW:
-                harvest_over_window(pg, box, source_query(q, name), [], n, run_query,
-                                    depth=depth + 1, kind="j")
+            sq = source_query(base, name)
+            srecs, stot = api_first(pg, sq)
+            stot = int(stot or 0)
+            log("[cover-j]", stot, name[:70], "issn", (issn or "")[:12])
+            if stot <= API_WINDOW:
+                run_query(sq, srecs, stot)
             else:
-                harvest_over_window(pg, box, source_query(q, name), [], n, run_query,
+                harvest_over_window(pg, box, sq, srecs, stot, run_query,
                                     depth=depth + 1, kind="j")
+        names = [n for n, _, _ in srcs]
+        q_next, n_not = remainder_query(q_cur, names, strip=False)
+        if n_not == 0:
+            q_next, n_not = remainder_query(base, list(seen_set), strip=True)
+        log("[cover-not]", n_not, "qlen", len(q_next), "seen", len(seen_set))
+        if n_not == 0 or q_next == q_cur:
+            log("[cover-qfull]", rtot, "seen", len(seen_set))
+            return
+        q_cur = q_next
 
 
 def harvest_over_window(pg, box, q, recs0, total, run_query, depth=0, kind="root"):
@@ -1273,7 +1429,9 @@ def _txt(v):
     if isinstance(v, str):
         return v
     if isinstance(v, dict):
-        return v.get("text") or v.get("value") or v.get("name") or ""
+        # 网关的作者对象是 {"first","full","last"}，旧版只认 text/value/name，
+        # 结果 105,601 条记录的 authors 全是空串（09-24 实测）。
+        return v.get("text") or v.get("value") or v.get("name") or v.get("full") or ""
     return str(v)
 
 
@@ -1288,7 +1446,15 @@ def _authors(v):
             if isinstance(a, str):
                 names.append(a)
             elif isinstance(a, dict):
-                names.append(_txt(a.get("preferredName") or a.get("name") or a.get("surname") or a))
+                pn = a.get("preferredName")
+                if isinstance(pn, dict):
+                    full = pn.get("full") or pn.get("name")
+                    if not full:
+                        last, first = pn.get("last") or "", pn.get("first") or ""
+                        full = (last + ", " + first).strip(", ") if (last or first) else ""
+                    names.append(full)
+                else:
+                    names.append(_txt(pn or a.get("name") or a.get("surname") or a))
         return "; ".join(x for x in names if x)
     return _txt(v)
 
@@ -1327,8 +1493,12 @@ def parse_docs(body):
         src = e.get("prism:publicationName") or e.get("publicationName") or e.get("sourceTitle") or e.get("sourceName")
         issn = e.get("prism:issn") or e.get("issn")
         sid = e.get("sourceId") or e.get("srcid")
-        if isinstance(e.get("source"), dict):
-            so = e["source"]
+        so = e.get("source")
+        if isinstance(so, str):
+            # 网关有时把 source 直接给成字符串。旧版只在它是 dict 时取值，
+            # 字符串形态整条丢掉 —— 实测 20% 的记录 source 为空就是这么来的。
+            src = src or so
+        elif isinstance(so, dict):
             src = src or so.get("name") or so.get("title") or so.get("publicationName")
             issn = issn or so.get("issn") or so.get("issnPrint")
             sid = sid or so.get("id") or so.get("sourceId")
@@ -1339,7 +1509,10 @@ def parse_docs(body):
             "eid": _txt(e.get("eid") or e.get("dc:identifier")),
             "doi": _txt(e.get("prism:doi") or e.get("doi")).replace("https://doi.org/", ""),
             "title": _txt(e.get("dc:title") or e.get("title")),
-            "year": _txt(e.get("prism:coverDate") or e.get("coverDate") or e.get("publicationYear") or e.get("year"))[:4],
+            # 网关字段叫 pubYear。旧版查 publicationYear/year，两个都不存在，
+            # 于是 year 在 105,601 条里 100% 为空（09-24 实测）。
+            "year": _txt(e.get("pubYear") or e.get("prism:coverDate") or e.get("coverDate")
+                         or e.get("publicationYear") or e.get("year"))[:4],
             "source": _txt(src),
             "issn": _txt(issn),
             "source_id": _txt(sid),
@@ -1619,11 +1792,73 @@ def _js_search_fetch(pg, url, body_obj):
         st, txt = None, (r or "")
     note_http_status(st, txt)
     if st and st != 200:
+        if st == 400:
+            _bad_query[0] += 1
+            _bad_query_kind[0] = txt[:160].replace("\n", " ")
+        else:
+            _bad_fetch[0] += 1
         log("[search-http]", st, "len", len(txt))
         if st in (429, 418, 503, 403):
             time.sleep(max(_backoff[0], 8.0))
             _last_api[0] = time.time()
     return txt
+
+
+def fetch_doc_details(pg, eid):
+    """GET {gateway}/gateway/doc-details/documents/{eid}。
+
+    09-17 已打通：同一落地会话里 fetch 即可，不必打开 record 页。
+    返回 (dict_or_None, http_status)。401/403/429/5xx 走 note_http_status，
+    由调用方决定停不停手；404 表示这篇没有详情，不是会话坏了。
+    """
+    eid = (eid or "").strip()
+    if not eid:
+        return None, 0
+    pace("detail")
+    base = (gateway_base(surl(pg)) or "").rstrip("/")
+    if not base:
+        log("[detail-nobase]", eid)
+        return None, 0
+    url = base + "/gateway/doc-details/documents/" + eid
+    try:
+        r = pg.evaluate("""async (u) => {
+            const rr = await fetch(u, {method:'GET',
+                headers:{'Accept':'application/json'}, credentials:'include'});
+            const t = await rr.text();
+            return {st: rr.status, t: t};
+        }""", url)
+    except Exception as e:
+        log("[detail-ex]", eid, str(e)[:80])
+        return None, 0
+    if isinstance(r, dict):
+        st = r.get("st")
+        txt = r.get("t") or ""
+    else:
+        st, txt = None, (r or "")
+    try:
+        st = int(st or 0)
+    except Exception:
+        st = 0
+    note_http_status(st, txt)
+    if st and st != 200:
+        if st == 400:
+            _bad_query[0] += 1
+            _bad_query_kind[0] = ("detail " + txt[:120]).replace("\n", " ")
+        elif st != 404:
+            _bad_fetch[0] += 1
+        log("[detail-http]", st, eid, "len", len(txt))
+        if st in (429, 418, 503, 403):
+            time.sleep(max(_backoff[0], 8.0))
+            _last_api[0] = time.time()
+        return None, st
+    try:
+        d = json.loads(txt) if txt else None
+    except Exception:
+        log("[detail-json]", eid, "len", len(txt))
+        return None, st
+    if not isinstance(d, dict):
+        return None, st
+    return d, st
 
 
 def fetch_rest(pg, box, query, recs, total, on_page=None):

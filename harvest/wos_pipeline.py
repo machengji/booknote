@@ -12,7 +12,7 @@
 
 不要加 --auto-login（OCR 刷登录会封号）。远程机器等本机写出 JSONL 再拷。
 """
-import sys, os, io, json, time, re, datetime, base64, traceback
+import sys, os, io, json, time, re, random, datetime, base64, traceback
 
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -30,6 +30,18 @@ if not getattr(sys.stdout, "_wos_wrap", False):
 
 def log(*a):
     print(" ".join(str(x) for x in a), flush=True)
+
+
+def problem(kind, *a):
+    """Append failures for daily ops. Does not stop harvest."""
+    msg = time.strftime("%Y-%m-%d %H:%M:%S") + " [" + kind + "] " + " ".join(str(x) for x in a)
+    print(msg, flush=True)
+    try:
+        os.makedirs(os.path.dirname(PROBLEM_LOG), exist_ok=True)
+        with open(PROBLEM_LOG, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
 
 
 def load_dotenv():
@@ -58,14 +70,25 @@ SESSION_FILE = os.path.join(OUT_DIR, "scihuber_session.json")
 MAX_LOGINS_PER_DAY = 2
 MIN_LOGIN_INTERVAL_SEC = 8 * 3600
 SNAP = os.environ.get("BOOKNOTE_LOG", os.path.join(DATA, "logs"))
+PROBLEM_LOG = os.path.join(SNAP, "wos_problems.log")
 BATCH = 1000
+HUMAN_WAIT = int(os.environ.get("WOS_HUMAN_WAIT") or "40")
+# 普通页面操作的默认超时；导出另用 EXPORT_TIMEOUT_MS（大命中数生成 xls 慢得多）。
+PAGE_TIMEOUT_MS = int(os.environ.get("WOS_PAGE_TIMEOUT_MS") or "90000")
+EXPORT_TIMEOUT_MS = int(os.environ.get("WOS_EXPORT_TIMEOUT_MS") or "300000")
+# 导出批间隔。实测 WOS(shu) 走上海图书馆代理时，6 秒间隔连做约 10 批之后
+# 开始稳定报 "Page.evaluate: The operation was aborted"（代理侧限速），
+# 放慢并加抖动可以显著提高整轮通过率。
+BATCH_SLEEP = float(os.environ.get("WOS_BATCH_SLEEP") or "13")
+BATCH_SLEEP_JITTER = float(os.environ.get("WOS_BATCH_SLEEP_JITTER") or "5")
+# 当前使用的入口名，写进逐日账本，便于看清不同镜像的订阅口径差异。
+CURRENT_ENTRY = [""]
 WOS_ENTRIES = [
     (5954, "WOS(shu)"),
-    (3876, "WOS(gw3)"),
     (6119, "WOS(nju)"),
+    (3876, "WOS(gw3)"),
     (6081, "WOS(usst)"),
     (6035, "WOS(cqu)"),
-    (4321, "WOS(wy)"),
 ]
 os.makedirs(RAW, exist_ok=True)
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -239,10 +262,13 @@ def cookies_still_vip(cookies):
         except Exception:
             s.cookies.set(c["name"], c["value"])
     try:
-        r = s.get(SITE + "e/member/cp/", timeout=25, allow_redirects=True)
+        r = s.get(SITE + "e/member/cp/", timeout=60, allow_redirects=True)
     except Exception as e:
-        log("[vip-check-err]", str(e)[:80])
-        return False
+        # 站点超时 ≠ cookie 失效。有登录票就让浏览器去试，否则每轮
+        # 会在探测失败时直接 NO_SESSION，白白丢掉刚登录的会话。
+        has_auth = any((c.get("name") or "") == "jtqetmlauth" for c in cookies)
+        log("[vip-check-err]", str(e)[:80], "has_auth", has_auth, "reuse-anyway")
+        return has_auth
     ok = "高级VIP" in (r.text or "") or ("退出" in (r.text or "") and "login" not in r.url)
     log("[vip-check]", ok, r.url[:80])
     return ok
@@ -287,9 +313,9 @@ def has_human_challenge(pg):
     return False
 
 
-def wait_human_challenge(pg, timeout_sec=600):
+def wait_human_challenge(pg, timeout_sec=600, force=False):
     """Clarivate 人机验证必须人点。有头窗口里等用户做完。"""
-    if not has_human_challenge(pg):
+    if not force and not has_human_challenge(pg):
         return True
     snap(pg, "human_challenge")
     log("WAIT_HUMAN: WoS 弹出了人机验证（选图片）。请在窗口里点完，点完后不要关窗口。")
@@ -541,20 +567,60 @@ def grab_sid(pg):
     return CURRENT_SID
 
 
+def wait_sid(pg, timeout_sec=30):
+    global CURRENT_SID
+    n = max(6, int(timeout_sec / 2))
+    for i in range(n):
+        grab_sid(pg)
+        u = surl(pg) or ""
+        if CURRENT_SID and ("smart-search" in u or "woscc" in u or "summary" in u):
+            log("[sid-ready]", CURRENT_SID[:18], u[:110])
+            return True
+        if CURRENT_SID and i >= 3:
+            log("[sid-ready]", CURRENT_SID[:18], u[:110])
+            return True
+        time.sleep(2)
+    log("[no-sid]", (surl(pg) or "")[:120])
+    return bool(CURRENT_SID)
+
+
+def try_pass_hop(pg):
+    """Click through scihub hop: 进入 / 继续 / simple image captcha prompt."""
+    try:
+        hit = pg.evaluate("""() => {
+            const vis = e => {
+                const r = e.getBoundingClientRect();
+                return r.width > 8 && r.height > 8;
+            };
+            const lab = e => ((e.innerText||'')+' '+(e.value||'')+' '+(e.getAttribute('alt')||'')).replace(/\\s+/g,' ').trim();
+            const els = Array.from(document.querySelectorAll('a,button,input,[onclick],img'));
+            const btn = els.find(e => vis(e) && /进入数据库|进入WoS|进入WOS|继续访问|点击进入|立即进入/.test(lab(e)));
+            if (btn) { btn.click(); return lab(btn).slice(0,40); }
+            return '';
+        }""")
+        if hit:
+            log("[hop-click]", hit)
+    except Exception as e:
+        log("[hop-click-err]", str(e)[:80])
+
+
 def close_junk_tabs(context, keep=None):
-    """Drop leftover Clarivate login / neterror tabs. Never close a live WoS tab."""
+    """Drop leftover hop / login / neterror tabs. Keep list page and live WoS."""
     for p in list(context.pages):
         if keep is not None and p is keep:
             continue
         u = surl(p)
-        why = dead_reason(p)
-        if not why:
-            continue
         if is_wos_ui(u) or is_wos_session(u):
+            continue
+        if "scidownload.com" in (u or "") and "ListInfo" in (u or ""):
+            continue
+        why = dead_reason(p)
+        hop = bool(re.search(r"scihub\.top|lunwen\.one|downsci|libproxy|clarivate", u or "", re.I))
+        if not why and not hop:
             continue
         try:
             p.close()
-            log("[close-junk]", why, u[:80])
+            log("[close-junk]", why or "hop", u[:80])
         except Exception:
             pass
 
@@ -674,9 +740,21 @@ def open_entry(pg, eid, name):
             if i == 0 or i % 5 == 4:
                 log("[init-wait]", surl(best)[:120])
         elif score >= 40:
-            log("[proxy-wait]", surl(best)[:120])
-            if i >= 5:
-                log("[skip-entry]", name, "proxy-stuck")
+            try:
+                t = (page_text(best) or "").replace("\n", " ")[:180]
+            except Exception:
+                t = ""
+            log("[proxy-wait]", surl(best)[:120], t)
+            try_pass_hop(best)
+            uhop = surl(best) or ""
+            if i >= 2 and ("403 Forbidden" in t or "404 Not Found" in t):
+                log("[skip-entry]", name, "hop-http-error, next library")
+                return None
+            if i >= 3 and "scihub.top" in uhop.lower() and not (t or "").strip():
+                log("[skip-entry]", name, "empty-hop, next library")
+                return None
+            if i >= 16:
+                log("[skip-entry]", name, "proxy-stuck, next library")
                 return None
     if sess_page is not None:
         grab_sid(sess_page)
@@ -999,13 +1077,18 @@ def smart_search(pg, day):
     qid, total = api_search(pg, day)
     if qid and isinstance(total, int) and total > 0:
         return qid, total
+    if isinstance(total, str) and "authorization" in total:
+        return None, "authorization"
     if total == "passiveVerificationRequired" or has_human_challenge(pg):
-        wait_human_challenge(pg)
+        log("[need-human] wait %ds, else switch library" % HUMAN_WAIT)
+        wait_human_challenge(pg, timeout_sec=HUMAN_WAIT, force=True)
         qid, total = api_search(pg, day)
         if qid and isinstance(total, int) and total > 0:
             return qid, total
+        if total == "passiveVerificationRequired" or has_human_challenge(pg):
+            return None, "passiveVerificationRequired"
     snap(pg, "after_search")
-    return qid, total if isinstance(total, int) else None
+    return qid, total if isinstance(total, int) else total
 
 
 def _wos_origin(pg):
@@ -1028,6 +1111,12 @@ def page_export(pg, qid, a, b, raw):
         "markFrom": str(a), "markTo": str(b), "view": "summary",
         "isRefQuery": "false", "locale": "zh_CN", "filters": "fullRecord"
     }, separators=(",", ":"))
+    # 命中数大的检索，WoS 端生成 xls 很慢，90s 默认超时会被判成
+    # "Page.evaluate: The operation was aborted"，必须临时放宽。
+    try:
+        pg.set_default_timeout(EXPORT_TIMEOUT_MS)
+    except Exception:
+        pass
     try:
         info = pg.evaluate("""async (payload) => {
             const sid = payload.sid || '';
@@ -1055,6 +1144,11 @@ def page_export(pg, qid, a, b, raw):
     except Exception as e:
         log("[export-err]", str(e)[:130])
         return False
+    finally:
+        try:
+            pg.set_default_timeout(PAGE_TIMEOUT_MS)
+        except Exception:
+            pass
     if not info or not info.get("ok"):
         log("[export fail]", (info or {}).get("code"), str((info or {}).get("head") or "")[:180])
         return False
@@ -1130,21 +1224,34 @@ def harvest(pg, day):
     if "access.clarivate.com/login" in (u or "").lower() and "webofscience" not in (u or "").lower():
         log("[harvest-abort] still on login wall", u[:120])
         return 2
-    wait_human_challenge(pg)
+    wait_human_challenge(pg, timeout_sec=20)
     qid, total = smart_search(pg, day)
+    if isinstance(total, str) and "authorization" in total:
+        log("[switch-lib] no search right on this campus")
+        return 6
+    if total == "passiveVerificationRequired":
+        log("[switch-lib] captcha not solved on this campus")
+        return 6
     if not qid:
-        return 2
+        log("[switch-lib] no qid, next campus")
+        return 6
     total = int(total or 0)
     log("[qid]", qid, "total", total)
     if total <= 0:
         log("[no-records] query returned 0 hits, skip export")
         snap(pg, "zero_hits")
-        return 2
+        ledger_write(day, 0, 0, 0, False, qid, "no-records")
+        return 0
     out_path = os.path.join(OUT_DIR, "wos_%s.jsonl" % day[:7])
     new_all = 0
+    rows_sum = 0
     batch = 1
     cap = total
+    short = []
     max_b = int(os.environ.get("WOS_MAX_BATCH", "0") or 0)
+    # 必须把 [1..total] 每个千条窗口都请求一遍。早先版本遇到
+    # nrows < BATCH 就 break，把「WoS 端偶尔少给几行」当成了「没有更多」，
+    # 实测把 09-01 截断在 5925/37626。
     while (batch - 1) * BATCH < cap:
         if max_b and batch > max_b:
             log("[max-batch stop]", max_b)
@@ -1165,30 +1272,82 @@ def harvest(pg, day):
                 log("[qid-refresh]", qid, "total", total)
                 b = min(batch * BATCH, cap)
         if not exported:
+            ledger_write(day, total, rows_sum, new_all, False, qid, "export-failed-b%d" % batch)
             return 4
         try:
             added, nrows = ingest(raw, out_path)
             new_all += added
+            rows_sum += nrows
             log("[parse b%d] rows=%d new=%d cum=%d" % (batch, nrows, added, new_all))
-            if nrows < BATCH:
-                break
+            if nrows < (b - a + 1):
+                short.append({"a": a, "b": b, "rows": nrows})
+                log("[short-batch]", a, b, "rows", nrows)
         except Exception as e:
             log("[parse-err]", str(e)[:200])
             traceback.print_exc()
+            ledger_write(day, total, rows_sum, new_all, False, qid, "parse-err")
             return 5
         batch += 1
-        time.sleep(6)
-    complete = not (max_b and batch > max_b)
+        time.sleep(BATCH_SLEEP + random.random() * BATCH_SLEEP_JITTER)
+    # 采全口径：导出拿到的行数必须覆盖检索命中数，且不能有短窗口。
+    complete = (not (max_b and batch > max_b)) and rows_sum >= total - 5 and not short
+    note = "" if complete else "rows %d/%d short %d" % (rows_sum, total, len(short))
+    complete = ledger_write(day, total, rows_sum, new_all, complete, qid, note)
     st = {"last_qid": qid, "last_total": total, "last_new": new_all,
-          "ts": time.strftime("%Y-%m-%d %H:%M:%S"), "source": "scihuber"}
+          "last_rows": rows_sum, "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+          "source": "scihuber"}
     if complete:
         st["last_done"] = day
     else:
         st["last_partial"] = day
-        log("[partial] not marking last_done (once/max-batch)")
+        log("[partial] rows<total, not marking last_done", note)
     json.dump(st, open(STATE, "w"), ensure_ascii=False, indent=1)
-    log("[WINDOW_DONE]", day, "new", new_all, "complete", complete)
+    log("[WINDOW_DONE]", day, "rows", rows_sum, "/", total, "new", new_all, "complete", complete)
     return 0
+
+
+LEDGER = os.path.join(OUT_DIR, "wos_day_ledger.json")
+
+
+def ledger_write(day, total, rows, new, complete, qid="", note=""):
+    """WoS 记录里没有 load_date（要与官方导出列 1:1），逐日账本单独落盘。
+
+    fails 记录该天连续失败次数：连续失败多次的天不再每轮重试，避免把
+    3 小时一轮的预算全烧在同一个导不出来的大天上（整月复核时仍会再试）。
+
+    total_max 记录该天在所有入口里见过的最大命中数。不同机构镜像的 WoS
+    订阅范围不同（实测 09-01：WOS(shu)=45311、WOS(nju)=37626），按小口径
+    判定「采全」会漏掉大口径独有的记录，所以用 total_max 当门槛。
+    """
+    try:
+        led = {}
+        if os.path.exists(LEDGER):
+            try:
+                led = json.load(open(LEDGER, encoding="utf-8"))
+            except Exception:
+                led = {}
+        prev = led.get(day) or {}
+        if prev.get("complete") and not complete and note == "":
+            return
+        total = int(total or 0)
+        rows = int(rows or 0)
+        total_max = max(int(prev.get("total_max") or 0), total)
+        scope_gap = total < total_max
+        complete = bool(complete) and rows >= total_max
+        if scope_gap and complete:
+            note = (note + " | " if note else "") + "scope: entry total %d < max %d" % (total, total_max)
+        fails = 0 if complete else int(prev.get("fails") or 0) + 1
+        led[day] = {
+            "total": total, "total_max": total_max, "rows": rows, "new": int(new or 0),
+            "complete": complete, "entry": CURRENT_ENTRY[0], "qid": qid,
+            "note": note, "fails": fails,
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        json.dump(led, open(LEDGER, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        return complete
+    except Exception as e:
+        log("[ledger-err]", str(e)[:80])
+        return False
 
 
 def dates_todo():
@@ -1224,33 +1383,46 @@ def harvest_from_page(pg, days):
     except Exception as e:
         log("[cp-err]", str(e)[:80])
     if "高级VIP" not in scontent(pg) and "e/member/login" in surl(pg):
-        log("FAIL_NOT_LOGGED")
+        problem("FAIL_NOT_LOGGED", surl(pg)[:120])
         return 2
     save_pw_cookies(pg.context)
     last_rc = 3
     for eid, name in WOS_ENTRIES:
+        log("[try-lib]", name)
         app = open_entry(pg, eid, name)
         if app is None:
+            problem("SWITCH_LIB", name, "did not land")
             continue
         log("[using]", name)
+        CURRENT_ENTRY[0] = name
         save_pw_cookies(app.context)
-        wait_human_challenge(app)
+        wait_sid(app, timeout_sec=25)
+        wait_human_challenge(app, timeout_sec=20)
         rc = 0
         for day in days:
             r = harvest(app, day)
-            if r != 0:
+            if r == 6:
+                problem("SWITCH_LIB", name, "no access")
                 rc = r
-                log("[harvest-fail-next]", name, "rc", r)
                 break
-        else:
+            if r != 0:
+                # 一天失败不拖累其它天，账本会留下缺口交给下一轮。
+                rc = rc or r
+                log("[harvest-day-fail]", name, day, "rc", r)
+        if rc == 0:
             return 0
-        last_rc = rc
         try:
             if app is not pg:
                 app.close()
         except Exception:
             pass
-    log("FAIL_LAND")
+        if rc == 6:
+            last_rc = rc
+            continue
+        # 非权限类失败：不再换入口把整批重导一遍，白烧预算。
+        problem("HARVEST_PARTIAL", name, "rc", rc, "days", days)
+        return rc
+    problem("FAIL_LAND", "last_rc", last_rc)
     return last_rc
 
 
@@ -1266,8 +1438,8 @@ def run_days(days, wait_login=False, auto_login=False, headed=True, login_only=F
     elif auto_login:
         need_user = False
     else:
-        log("NO_SESSION: 请先本机运行  harvest/wos_pipeline.py --wait-login")
-        log("（会弹出浏览器，账号密码已填，你只填验证码。远程先不要跑。）")
+        problem("NO_SESSION", "cookie missing or not VIP")
+        log("请先本机运行  harvest/wos_pipeline.py --wait-login")
         return 2
     log("[browser]", "headed" if headed else "headless")
     with Camoufox(headless=not headed, exclude_addons=["ublock-origin"]) as b:
@@ -1276,7 +1448,7 @@ def run_days(days, wait_login=False, auto_login=False, headed=True, login_only=F
         pg.on("dialog", lambda d: d.accept())
         if need_user:
             if not wait_user_login(pg):
-                log("FAIL_LOGIN")
+                problem("FAIL_LOGIN", "wait-login timeout")
                 return 2
         elif saved:
             inject_cookie_list(pg.context, saved)
@@ -1284,7 +1456,7 @@ def run_days(days, wait_login=False, auto_login=False, headed=True, login_only=F
             log("[warn] --auto-login 会消耗登录次数，站点可能封号")
             sess = http_login()
             if not sess:
-                log("FAIL_LOGIN")
+                problem("FAIL_LOGIN", "auto-login failed")
                 return 2
             inject_cookies(pg.context, sess)
         if login_only:
@@ -1304,9 +1476,9 @@ def main():
     if "--once" in args:
         os.environ["WOS_MAX_BATCH"] = "1"
     rest = [a for a in args if not a.startswith("--")]
-    arg = rest[0] if rest else "daily"
-    if re.match(r"\d{4}-\d{2}-\d{2}$", arg):
-        days = [arg]
+    dates = [a for a in rest if re.match(r"\d{4}-\d{2}-\d{2}$", a)]
+    if dates:
+        days = dates
     else:
         days = dates_todo()
     log("=== scihuber_wos start", time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1314,7 +1486,10 @@ def main():
         "headed", headed, "login_only", login_only, "===")
     rc = run_days(days, wait_login=wait_login, auto_login=auto_login,
                   headed=headed, login_only=login_only)
-    log("DONE" if rc == 0 else "FAILED rc=%d" % rc)
+    if rc == 0:
+        log("DONE")
+    else:
+        problem("FAILED", "rc=%d" % rc, "days", days)
     return rc
 
 
@@ -1323,5 +1498,5 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception:
         traceback.print_exc()
-        log("FAILED exception")
+        problem("EXCEPTION", traceback.format_exc()[-400:].replace("\n", " | "))
         sys.exit(3)

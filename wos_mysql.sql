@@ -1,0 +1,93 @@
+
+
+DROP TABLE IF EXISTS `wos_records`;
+CREATE TABLE `wos_records` (
+  -- 主键/去重
+  `ut_unique_wos_id`      VARCHAR(32)  NOT NULL COMMENT 'UT:入藏号，主键',
+  -- 出版类型/题名
+  `publication_type`      VARCHAR(32)  NULL COMMENT 'PT',
+  `article_title`         TEXT         NULL COMMENT 'TI',
+  `source_title`          VARCHAR(512) NULL COMMENT 'SO',
+  `book_series_title`     VARCHAR(512) NULL COMMENT 'SE',
+  `book_series_subtitle`  VARCHAR(512) NULL COMMENT 'BS',
+  `language`              VARCHAR(64)  NULL COMMENT 'LA',
+  `document_type`         VARCHAR(128) NULL COMMENT 'DT',
+  -- 作者
+  `authors`               TEXT         NULL COMMENT 'AU:缩写，分号分隔',
+  `author_full_names`     TEXT         NULL COMMENT 'AF:全名，分号分隔',
+  `book_authors`          TEXT         NULL COMMENT 'BA',
+  `book_author_full_names` TEXT        NULL COMMENT 'BF',
+  `group_authors`         TEXT         NULL COMMENT 'CA',
+  `book_group_authors`    TEXT         NULL COMMENT 'GP',
+  `book_editors`          TEXT         NULL COMMENT 'BE',
+  -- 会议
+  `conference_title`      VARCHAR(1024) NULL COMMENT 'CT',
+  `conference_date`       VARCHAR(128)  NULL COMMENT 'CY',
+  `conference_location`   VARCHAR(512)  NULL COMMENT 'CL',
+  `conference_sponsor`    VARCHAR(512)  NULL COMMENT 'SP',
+  `conference_host`       VARCHAR(512)  NULL COMMENT 'HO',
+  -- 关键词/摘要
+  `author_keywords`       TEXT         NULL COMMENT 'DE',
+  `keywords_plus`         TEXT         NULL COMMENT 'ID',
+  `abstract_text`         MEDIUMTEXT   NULL COMMENT 'AB',
+  -- 地址/标识
+  `addresses`             MEDIUMTEXT   NULL COMMENT 'C1',
+  `affiliations`          MEDIUMTEXT   NULL COMMENT '附加:解析后机构',
+  `reprint_addresses`     TEXT         NULL COMMENT 'RP',
+  `email_addresses`       TEXT         NULL COMMENT 'EM',
+  `researcher_ids`        TEXT         NULL COMMENT 'RI',
+  `orc_ids`               TEXT         NULL COMMENT 'OI',
+  -- 资助
+  `funding_orgs`          TEXT         NULL COMMENT 'FU',
+  `funding_name_preferred` TEXT        NULL COMMENT 'FU优选名(附加)',
+  `funding_text`          TEXT         NULL COMMENT 'FX',
+  -- 引文/使用
+  `cited_references`      MEDIUMTEXT   NULL COMMENT 'CR',
+  `cited_reference_count` INT          NULL COMMENT 'NR',
+  `times_cited_wos_core`  INT          NULL DEFAULT 0 COMMENT 'TC',
+  `times_cited_all_db`    INT          NULL DEFAULT 0 COMMENT 'Z9',
+  `usage_count_180_days`  INT          NULL DEFAULT 0 COMMENT 'U1',
+  `usage_count_since_2013` INT         NULL DEFAULT 0 COMMENT 'U2',
+  -- 出版商/刊号
+  `publisher`             VARCHAR(512) NULL COMMENT 'PU',
+  `publisher_city`        VARCHAR(256) NULL COMMENT 'PI',
+  `publisher_address`     VARCHAR(1024) NULL COMMENT 'PA',
+  `issn`                  VARCHAR(16)  NULL COMMENT 'SN',
+  `eissn`                 VARCHAR(16)  NULL COMMENT 'EI',
+  `isbn`                  VARCHAR(32)  NULL COMMENT 'BN',
+  `journal_abbreviation`  VARCHAR(128) NULL COMMENT 'J9',
+  `journal_iso_abbreviation` VARCHAR(128) NULL COMMENT 'JI',
+  -- 卷期页/标识
+  `publication_date`      VARCHAR(64)  NULL COMMENT 'PD',
+  `publication_year`      SMALLINT     NULL COMMENT 'PY',
+  `volume`                VARCHAR(32)  NULL COMMENT 'VL',
+  `issue`                 VARCHAR(32)  NULL COMMENT 'IS',
+  `part_number`           VARCHAR(32)  NULL COMMENT 'PN',
+  `supplement`            VARCHAR(64)  NULL COMMENT 'SU',
+  `special_issue`         VARCHAR(64)  NULL COMMENT 'SI',
+  `meeting_abstract`      VARCHAR(64)  NULL COMMENT 'MA',
+  `start_page`            VARCHAR(32)  NULL COMMENT 'BP',
+  `end_page`              VARCHAR(32)  NULL COMMENT 'EP',
+  `article_number`        VARCHAR(64)  NULL COMMENT 'AR',
+  `doi`                   VARCHAR(256) NULL COMMENT 'DI',
+  `doi_link`              VARCHAR(512) NULL COMMENT 'DL',
+  `book_doi`              VARCHAR(256) NULL COMMENT 'D2',
+  `early_access_date`     VARCHAR(64)  NULL COMMENT 'EA',
+  `number_of_pages`       INT          NULL COMMENT 'PG',
+  -- 分类/系统
+  `wos_categories`        TEXT         NULL COMMENT 'WC',
+  `web_of_science_index`  VARCHAR(256) NULL COMMENT 'WE:WoS索引',
+  `research_areas`        TEXT         NULL COMMENT 'SC',
+  `ids_number`            VARCHAR(64)  NULL COMMENT 'GA:文献传递号',
+  `pubmed_id`             VARCHAR(32)  NULL COMMENT 'PM',
+  `open_access_designations` VARCHAR(256) NULL COMMENT 'OA',
+  `highly_cited_status`   VARCHAR(32)  NULL COMMENT 'HC',
+  `hot_paper_status`      VARCHAR(32)  NULL COMMENT 'HP',
+  `date_of_export`        VARCHAR(32)  NULL COMMENT 'DA:本次导出日期',
+  `web_of_science_record` MEDIUMTEXT   NULL COMMENT '附加:原始记录串',
+  PRIMARY KEY (`ut_unique_wos_id`),
+  KEY `idx_doi` (`doi`),
+  KEY `idx_year` (`publication_year`),
+  KEY `idx_source` (`source_title`(191)),
+  KEY `idx_pubmed` (`pubmed_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

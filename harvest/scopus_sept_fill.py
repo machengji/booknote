@@ -13,14 +13,15 @@ import scopus_pipeline as sc
 from wos_pipeline import load_pw_cookies, cookies_still_vip, inject_cookie_list
 
 DAYS = [
-    "2026-09-01", "2026-09-02", "2026-09-05", "2026-09-07",
-    "2026-09-09", "2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13",
+    "2026-09-05", "2026-09-07", "2026-09-10",
+    "2026-09-11", "2026-09-12", "2026-09-13",
 ]
 KEEP_DONE = "2026-09-13"
 
 
 def main():
-    sc.log("=== scopus sept fill", DAYS, "===")
+    days = [a for a in sys.argv[1:] if not a.startswith("-")] or DAYS
+    sc.log("=== scopus sept fill", days, "===")
     saved = load_pw_cookies()
     ck = sc.sci_cookies(saved)
     vip = bool(saved and cookies_still_vip(saved))
@@ -71,7 +72,7 @@ def main():
         if app is None or app is sc.NEED_LOGIN:
             sc.problem("FAIL_LAND", "sept fill")
             return 3
-        for day in DAYS:
+        for day in days:
             box.pop("docs", None)
             box.pop("search_post", None)
             try:

@@ -30,3 +30,4 @@ venv/
 *_todo.txt
 config.local.json
 pdfs/
+patrol_report.md

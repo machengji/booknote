@@ -1,0 +1,361 @@
+{
+  "eid": "2-s2.0-105049033319",
+  "databaseName": "scopusbase",
+  "titles": [
+    "Anion-enriched Na<sup>+</sup> solvation enabled by FEC and trace NaF for stable cycling of tunnel-type Na<sub>0.44</sub>MnO<sub>2</sub> cathodes"
+  ],
+  "type": "ar",
+  "abstract": [
+    "Electrolyte composition strongly influences the cycling performance of tunnel-type Na<sub>0.44</sub>MnO<sub>2</sub> (NMO), yet additive selection for this cathode remains largely empirical. Here, we evaluate a dual-additive electrolyte containing fluoroethylene carbonate (FEC) and nominally added trace sodium fluoride (NaF) in a carbonate-ester baseline to determine how the formulation affects Na<sup>+</sup> solvation and electrode interfacial behavior. Raman spectroscopy and molecular dynamics simulations identify FEC as the principal additive that decreases Na<sup>+</sup>–EC coordination and promotes relatively greater anion participation in the first solvation shell; under the conditions examined, trace NaF contributes only modestly. The dual-additive formulation exhibits limited impedance growth during prolonged cycling, relatively balanced apparent Na<sup>+</sup> transport during insertion and extraction, and largely reversible structural evolution of the tunnel framework, as observed by in situ synchrotron X-ray diffraction. Two-electrode Na||NMO cells using this electrolyte retain 95.6% of their cycle-2 capacity after 150 cycles at 1C, comparable to the FEC-only formulation (95.9%) and higher than the NaF-only (74.3%) and baseline (66.6%) formulations, while providing the highest discharge capacity at each rate tested. NMO||hard-carbon full cells with the same electrolyte retain 88.2% of their cycle-2 discharge capacity after 130 cycles at 1C and achieve an average Coulombic efficiency of 99.84% over cycles 2–187. © 2026 Elsevier Ltd. All rights are reserved, including those for text and data mining, AI training, and similar technologies."
+  ],
+  "openAccess": false,
+  "openAccessTypes": [],
+  "language": "English",
+  "doi": "10.1016/j.est.2026.124418",
+  "pubmedInfo": null,
+  "source": {
+    "id": "21100400826",
+    "type": "j",
+    "link": "/sourceid/21100400826",
+    "title": "Journal of Energy Storage",
+    "issn": "2352152X",
+    "isbns": null,
+    "isbn": null,
+    "volume": "181",
+    "issue": null,
+    "pages": null,
+    "pageCount": null,
+    "articleNumber": "124418",
+    "firstPublication": {
+      "year": "2026",
+      "date": "15 December 2026"
+    },
+    "subjectAreaCodes": [
+      "2105",
+      "2102",
+      "2208"
+    ],
+    "coden": null,
+    "publisher": "Elsevier Ltd",
+    "additionalInfo": null,
+    "additionalInfoDetails": null,
+    "volumeEditors": null,
+    "conferenceSponsors": null,
+    "abbreviatedSourceTitle": "J. Energy Storage"
+  },
+  "authors": [
+    {
+      "id": "57213620506",
+      "name": "Weldegebrieal G.K.",
+      "lastName": "Weldegebrieal",
+      "firstName": "Getu Kassegn",
+      "initials": "G.K.",
+      "link": "/authid/detail.uri?authorId=57213620506",
+      "email": null,
+      "affiliationReferences": [
+        "a"
+      ]
+    },
+    {
+      "id": "57209198526",
+      "name": "Kao-ian W.",
+      "lastName": "Kao-ian",
+      "firstName": "Wathanyu",
+      "initials": "W.",
+      "link": "/authid/detail.uri?authorId=57209198526",
+      "email": null,
+      "affiliationReferences": [
+        "a"
+      ]
+    },
+    {
+      "id": "59300861800",
+      "name": "Gopalakrishnan M.",
+      "lastName": "Gopalakrishnan",
+      "firstName": "Mohan",
+      "initials": "M.",
+      "link": "/authid/detail.uri?authorId=59300861800",
+      "email": null,
+      "affiliationReferences": [
+        "a"
+      ]
+    },
+    {
+      "id": "23767560000",
+      "name": "Limphirat W.",
+      "lastName": "Limphirat",
+      "firstName": "Wanwisa",
+      "initials": "W.",
+      "link": "/authid/detail.uri?authorId=23767560000",
+      "email": null,
+      "affiliationReferences": [
+        "a",
+        "b"
+      ]
+    },
+    {
+      "id": "59453843800",
+      "name": "Buangam P.",
+      "lastName": "Buangam",
+      "firstName": "Pornsuwan",
+      "initials": "P.",
+      "link": "/authid/detail.uri?authorId=59453843800",
+      "email": null,
+      "affiliationReferences": [
+        "b"
+      ]
+    },
+    {
+      "id": "60820919500",
+      "name": "Zhang R.",
+      "lastName": "Zhang",
+      "firstName": "Ruiqin",
+      "initials": "R.",
+      "link": "/authid/detail.uri?authorId=60820919500",
+      "email": null,
+      "affiliationReferences": [
+        "c"
+      ]
+    },
+    {
+      "id": "57155091100",
+      "name": "Liu W.-R.",
+      "lastName": "Liu",
+      "firstName": "Wei-Ren",
+      "initials": "W.-R.",
+      "link": "/authid/detail.uri?authorId=57155091100",
+      "email": null,
+      "affiliationReferences": [
+        "a",
+        "d",
+        "e"
+      ]
+    },
+    {
+      "id": "55897360400",
+      "name": "Kheawhom S.",
+      "lastName": "Kheawhom",
+      "firstName": "Soorathep",
+      "initials": "S.",
+      "link": "/authid/detail.uri?authorId=55897360400",
+      "email": "Soorathep.K@chula.ac.th",
+      "affiliationReferences": [
+        "a",
+        "f"
+      ]
+    }
+  ],
+  "authorCount": "8",
+  "affiliations": [
+    {
+      "id": "60028190",
+      "departmentId": "112958590",
+      "link": "/pages/organization/60028190",
+      "name": "Department of Chemical Engineering, Faculty of Engineering, Chulalongkorn University, Bangkok, 10330, Thailand",
+      "fullName": "Department of Chemical Engineering, Faculty of Engineering, Chulalongkorn University",
+      "fullAddress": "Bangkok, 10330, Thailand",
+      "reference": "a"
+    },
+    {
+      "id": "60002849",
+      "departmentId": null,
+      "link": "/pages/organization/60002849",
+      "name": "Synchrotron Light Research Institute (Public Organization), 111 University Avenue, Muang District, Nakhon Ratchasima, 30000, Thailand",
+      "fullName": "Synchrotron Light Research Institute (Public Organization)",
+      "fullAddress": "111 University Avenue, Muang District, Nakhon Ratchasima, 30000, Thailand",
+      "reference": "b"
+    },
+    {
+      "id": "60013983",
+      "departmentId": null,
+      "link": "/pages/organization/60013983",
+      "name": "Department of Physics, City University of Hong Kong, Hong Kong",
+      "fullName": "Department of Physics, City University of Hong Kong",
+      "fullAddress": "Hong Kong",
+      "reference": "c"
+    },
+    {
+      "id": "60029740",
+      "departmentId": "107930649",
+      "link": "/pages/organization/60029740",
+      "name": "Department of Chemical Engineering, R&D Center for Membrane Technology, Chung Yuan Christian University, 200 Chung Pei Road, Chungli District, Taoyuan City, 32023, Taiwan",
+      "fullName": "Department of Chemical Engineering, R&D Center for Membrane Technology, Chung Yuan Christian University",
+      "fullAddress": "200 Chung Pei Road, Chungli District, Taoyuan City, 32023, Taiwan",
+      "reference": "d"
+    },
+    {
+      "id": "60018029",
+      "departmentId": "133193728",
+      "link": "/pages/organization/60018029",
+      "name": "College of Sustainability, National Tsing Hua University, No. 101, Section 2, Guangfu Road, Hsinchu City, 30013, Taiwan",
+      "fullName": "College of Sustainability, National Tsing Hua University",
+      "fullAddress": "No. 101, Section 2, Guangfu Road, Hsinchu City, 30013, Taiwan",
+      "reference": "e"
+    },
+    {
+      "id": "60028190",
+      "departmentId": "128390413",
+      "link": "/pages/organization/60028190",
+      "name": "Center of Excellence on Advanced Materials for Energy Storage, Chulalongkorn University, Bangkok, 10330, Thailand",
+      "fullName": "Center of Excellence on Advanced Materials for Energy Storage, Chulalongkorn University",
+      "fullAddress": "Bangkok, 10330, Thailand",
+      "reference": "f"
+    }
+  ],
+  "copyright": {
+    "type": "Elsevier",
+    "text": "Copyright 2026 Elsevier B.V., All rights reserved."
+  },
+  "authorKeywords": [
+    "Carbonate-ester electrolytes",
+    "Electrochemical performance",
+    "Electrolyte additives",
+    "Molecular dynamics simulation",
+    "Na<sub>0.44</sub>MnO<sub>2</sub>cathode"
+  ],
+  "indexedKeywords": {
+    "CCV": [
+      "Additives",
+      "Carbonation",
+      "Data mining",
+      "Electric discharges",
+      "Iron compounds",
+      "Solid electrolytes",
+      "Solvation"
+    ],
+    "CFL": [
+      "Carbonate esters",
+      "Carbonate-ester electrolyte",
+      "Discharge capacities",
+      "Dynamics simulation",
+      "Electrochemical performance",
+      "Electrolyte additives",
+      "Fluoroethylene carbonates",
+      "MnO 2",
+      "Molecular dynamic simulation",
+      "Na0.44MnO2cathode"
+    ],
+    "CMH": [
+      "Cathodes",
+      "Sodium Fluoride"
+    ]
+  },
+  "fundingDetails": {
+    "fundingTexts": [
+      "This research has received funding support from the NSRF via the Thailand Science Research and Innovation Fund , Chulalongkorn University ( IND_FF_69_151_2100_024 ) and the Research and Innovation Acceleration Agency for Competitiveness and Area Development (RCAD) (Program Management Unit for Frontier Brainpower and Future Industries) [grant number B42G690095 ]. G.W., W.K., and M.G. thank Chulalongkorn Academic Advancement into its 2nd Century Project. "
+    ],
+    "fundingList": [
+      {
+        "acronym": null,
+        "sponsor": "NSRF",
+        "sponsorLink": null,
+        "numbers": null
+      },
+      {
+        "acronym": "CU",
+        "sponsor": "Chulalongkorn University",
+        "sponsorLink": "https://www.fundinginstitutional.com/funders/501100002873",
+        "numbers": "IND_FF_69_151_2100_024"
+      },
+      {
+        "acronym": null,
+        "sponsor": "Research and Innovation Acceleration Agency for Competitiveness and Area Development (RCAD) (Program Management Unit for Frontier Brainpower and Future Industries)",
+        "sponsorLink": null,
+        "numbers": "B42G690095"
+      }
+    ]
+  },
+  "updateNotice": null,
+  "collaborations": [],
+  "chemicalsInfo": [],
+  "tradenamesManufacturersInfo": {
+    "drugTradenames": null,
+    "deviceTradenames": null,
+    "textileTradenames": null
+  },
+  "tradenamesInfo": {
+    "drugTradenames": null,
+    "deviceTradenames": null,
+    "textileTradenames": null
+  },
+  "sequenceBanks": [],
+  "viewAtRepositoryLink": null,
+  "publicationYear": "2026",
+  "publicationStage": "FINAL",
+  "correspondences": [
+    {
+      "person": "S. Kheawhom",
+      "affiliation": "Department of Chemical Engineering, Faculty of Engineering, Chulalongkorn University, Bangkok, 10330, Thailand",
+      "eaddress": "Soorathep.K@chula.ac.th",
+      "affiliationDetails": {
+        "organizations": [
+          "Department of Chemical Engineering",
+          "Faculty of Engineering",
+          "Chulalongkorn University"
+        ],
+        "city": "Bangkok",
+        "cityGroup": "",
+        "addressPart": "",
+        "postalCode": "10330",
+        "country": "Thailand"
+      }
+    }
+  ],
+  "inwardLink": "https://www.scopus.com/inward/record.uri?eid=2-s2.0-105049033319&doi=10.1016%2fj.est.2026.124418&partnerID=40&md5=b4e8175de75c48ade4bb19e9ffbe9342",
+  "orderDocumentLink": null,
+  "citedBy": null,
+  "databaseCollections": [
+    "CPX",
+    "REAXYSCAR",
+    "SCOPUS",
+    "SNCPX",
+    "Scopusbase"
+  ],
+  "statusType": "core",
+  "itemidList": [
+    {
+      "idtype": "PUI",
+      "idtypeValue": "2048940013"
+    },
+    {
+      "idtype": "CAR-ID",
+      "idtypeValue": "977056782"
+    },
+    {
+      "idtype": "CPX",
+      "idtypeValue": "20263621426948"
+    },
+    {
+      "idtype": "REAXYSCAR",
+      "idtypeValue": "20262726177"
+    },
+    {
+      "idtype": "SCOPUS",
+      "idtypeValue": "20264047412"
+    },
+    {
+      "idtype": "SNCPX",
+      "idtypeValue": "2026111540"
+    },
+    {
+      "idtype": "SRC-OCC-ID",
+      "idtypeValue": "977056782#637378522"
+    },
+    {
+      "idtype": "SCP",
+      "idtypeValue": "105049033319"
+    },
+    {
+      "idtype": "SGR",
+      "idtypeValue": "105049033319"
+    }
+  ],
+  "firstPage": "",
+  "lastPage": "",
+  "publicationDate": {
+    "dateText": "15 December 2026",
+    "year": "2026",
+    "month": "12",
+    "day": "15"
+  }
+}

@@ -14,8 +14,9 @@ set BOOKNOTE_SCOPUS_DAY_GAP=25
 cd /d E:\booknote
 set PY=E:\py311\python.exe
 if not exist F:\pubmed\logs mkdir F:\pubmed\logs
-echo [%date% %time%] start %* >> F:\pubmed\logs\booknote_scopus_daily.log
-%PY% -u harvest\scopus_pipeline.py %* >> F:\pubmed\logs\booknote_scopus_daily.log 2>&1
+echo [%date% %time%] start le1000 %* >> F:\pubmed\logs\booknote_scopus_daily.log
+set BOOKNOTE_ISSN_BUCKETS=F:\pubmed\scopus_issn_buckets.json
+%PY% -u harvest\scopus_le1000.py %* >> F:\pubmed\logs\booknote_scopus_daily.log 2>&1
 set RC=%errorlevel%
 echo [%date% %time%] end rc=%RC% >> F:\pubmed\logs\booknote_scopus_daily.log
 if not %RC%==0 echo [%date% %time%] BAT_FAIL rc=%RC% >> F:\pubmed\logs\scopus_problems.log
