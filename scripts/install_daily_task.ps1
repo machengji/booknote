@@ -1,10 +1,20 @@
-# Register a Windows daily task at 07:00. Headed Camoufox needs an interactive logon.
+# ==============================================================================
+# 注册/修复每日 08:00 [Scopus + WoS] 自动采集 Windows 计划任务
+# 用法: powershell -ExecutionPolicy Bypass -File scripts\install_daily_task.ps1
+# ==============================================================================
+
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
-if (-not $root) { $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
-$bat = Join-Path $root "scripts\run_daily.bat"
-if (-not (Test-Path $bat)) { throw "missing $bat" }
-$tr = "cmd /c `"$bat`""
-schtasks /Create /TN "booknote-daily" /SC DAILY /ST 07:00 /RL LIMITED /IT /F /TR $tr
-Write-Host "ok: booknote-daily -> $bat (07:00, interactive)"
-Write-Host "cookie 失效时窗口会停在登录页；先跑: python harvest/wos_pipeline.py --wait-login"
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$BatPath = Join-Path $ProjectRoot "scripts\run_daily_harvest.bat"
+$TaskName = "Daily_8AM_Scopus_WoS_Goal_Harvester"
+
+Write-Host ">>> 正在注册每日 08:00 自动采集计划任务: $TaskName ..." -ForegroundColor Cyan
+Write-Host "    执行入口: $BatPath"
+
+schtasks /Create /TN "$TaskName" /TR "`"$BatPath`"" /SC DAILY /ST 08:00 /RL HIGHEST /F
+if ($LASTEXITCODE -ne 0) {
+    throw "计划任务注册失败，退出码: $LASTEXITCODE"
+}
+
+Write-Host "`n>>> 计划任务注册成功！当前任务状态核验：" -ForegroundColor Green
+schtasks /Query /TN "$TaskName" /FO LIST /V
